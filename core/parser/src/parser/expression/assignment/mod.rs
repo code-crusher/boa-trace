@@ -137,7 +137,10 @@ where
                     && matches!(
                         peek_1.kind(),
                         TokenKind::IdentifierName(_)
-                            | TokenKind::Keyword((Keyword::Yield | Keyword::Await | Keyword::Of, _))
+                            | TokenKind::Keyword((
+                                Keyword::Yield | Keyword::Await | Keyword::Of,
+                                _
+                            ))
                     )
                     && cursor.peek(2, interner)?.is_some_and(|tok| {
                         matches!(tok.kind(), TokenKind::Punctuator(Punctuator::Arrow))
