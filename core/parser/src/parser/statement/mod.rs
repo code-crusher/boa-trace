@@ -26,7 +26,10 @@ use self::{
     block::BlockStatement,
     break_stm::BreakStatement,
     continue_stm::ContinueStatement,
-    declaration::{Declaration, ExportDeclaration, ImportDeclaration, allowed_token_after_let},
+    declaration::{
+        Declaration, ExportDeclaration, ImportDeclaration, allowed_token_after_let,
+        allowed_token_after_using,
+    },
     expression::ExpressionStatement,
     if_stm::IfStatement,
     iteration::{DoWhileStatement, ForStatement, WhileStatement},
@@ -198,7 +201,7 @@ where
                 Ok(ast::Statement::Empty)
             }
             TokenKind::IdentifierName(_)
-            | TokenKind::Keyword((Keyword::Await | Keyword::Yield, _)) => {
+            | TokenKind::Keyword((Keyword::Await | Keyword::Yield | Keyword::Using, _)) => {
                 // Labelled Statement check
                 cursor.set_goal(InputElement::Div);
                 let tok = cursor.peek(1, interner)?;
@@ -424,12 +427,20 @@ where
         let tok = cursor.peek(0, interner).or_abrupt()?;
 
         match tok.kind().clone() {
-            TokenKind::Keyword((
-                Keyword::Function | Keyword::Class | Keyword::Const | Keyword::Using,
-                _,
-            )) => Declaration::new(self.allow_yield, self.allow_await)
-                .parse(cursor, interner)
-                .map(ast::StatementListItem::from),
+            TokenKind::Keyword((Keyword::Function | Keyword::Class | Keyword::Const, _)) => {
+                Declaration::new(self.allow_yield, self.allow_await)
+                    .parse(cursor, interner)
+                    .map(ast::StatementListItem::from)
+            }
+            TokenKind::Keyword((Keyword::Using, false))
+                if allowed_token_after_using(cursor.peek_no_skip_line_term(1, interner)?) =>
+            {
+                // `using` declarations require a binding identifier on the same line
+                // (`UsingDeclaration : using [no LineTerminator here] BindingList[~Pattern] ;`).
+                Declaration::new(self.allow_yield, self.allow_await)
+                    .parse(cursor, interner)
+                    .map(ast::StatementListItem::from)
+            }
             TokenKind::Keyword((Keyword::Let, false))
                 if allowed_token_after_let(cursor.peek(1, interner)?) =>
             {
@@ -443,6 +454,7 @@ where
                 if let Some(next_tok) = cursor.peek_no_skip_line_term(1, interner)?
                     && next_tok.kind() != &TokenKind::LineTerminator
                     && matches!(next_tok.kind(), TokenKind::Keyword((Keyword::Using, false)))
+                    && allowed_token_after_using(cursor.peek_no_skip_line_term(2, interner)?)
                 {
                     return Declaration::new(self.allow_yield, self.allow_await)
                         .parse(cursor, interner)

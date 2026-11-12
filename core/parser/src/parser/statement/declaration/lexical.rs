@@ -185,10 +185,39 @@ pub(crate) fn allowed_token_after_let(token: Option<&Token>) -> bool {
         Some(
             TokenKind::IdentifierName(_)
                 | TokenKind::Keyword((
-                    Keyword::Await | Keyword::Yield | Keyword::Let | Keyword::Async | Keyword::Of,
+                    Keyword::Await
+                        | Keyword::Yield
+                        | Keyword::Let
+                        | Keyword::Async
+                        | Keyword::Of
+                        | Keyword::Using,
                     _
                 ))
                 | TokenKind::Punctuator(Punctuator::OpenBlock | Punctuator::OpenBracket),
+        )
+    )
+}
+
+/// Check if the given token is valid after the `using` keyword of a `using` declaration.
+///
+/// A `using` declaration's binding list is restricted to `BindingIdentifier`s
+/// (`BindingList[~Pattern]`), so `using` is only a declaration head if the next token
+/// can start a binding identifier. Note that unlike `let`, `{` and `[` are invalid
+/// since binding patterns are not allowed.
+pub(crate) fn allowed_token_after_using(token: Option<&Token>) -> bool {
+    matches!(
+        token.map(Token::kind),
+        Some(
+            TokenKind::IdentifierName(_)
+                | TokenKind::Keyword((
+                    Keyword::Await
+                        | Keyword::Yield
+                        | Keyword::Let
+                        | Keyword::Async
+                        | Keyword::Of
+                        | Keyword::Using,
+                    _
+                ))
         )
     )
 }

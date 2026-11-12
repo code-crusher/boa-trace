@@ -796,7 +796,7 @@ fn await_using_no_line_terminator() {
     );
 }
 
-/// Checks that destructuring patterns are rejected for `using` declarations.
+/// Checks that `using` declarations cannot use object destructuring patterns.
 /// Per spec: <https://tc39.es/proposal-explicit-resource-management/>
 /// The grammar uses ~Pattern parameter which means destructuring is NOT allowed.
 #[test]
@@ -804,10 +804,10 @@ fn using_no_destructuring_object() {
     check_invalid_script("using {x, y} = resource;");
 }
 
-/// Checks that destructuring patterns are rejected for `using` declarations.
+/// Checks that `using` declarations cannot use array destructuring patterns.
 #[test]
 fn using_no_destructuring_array() {
-    check_invalid_script("using [a, b] = resource;");
+    check_invalid_script("export using [a, b] = resource;");
 }
 
 /// Checks that destructuring patterns are rejected for `await using` declarations.
@@ -898,4 +898,157 @@ fn await_using_valid_identifiers() {
         "Failed to parse await using with multiple bindings: {:?}",
         result.err()
     );
+}
+
+/// Checks that `using` is still parsed as an identifier when it cannot start a
+/// `using` declaration (`using` is a contextual keyword).
+/// See: <https://github.com/boa-dev/boa/issues/5602>
+#[test]
+fn using_as_identifier() {
+    // `using` declarations need a binding identifier on the same line; everything
+    // else starting with `using` is an expression statement.
+    let interner = &mut Interner::default();
+    check_script_parser(
+        "var using = 0; using;",
+        vec![
+            Statement::Var(VarDeclaration(
+                vec![Variable::from_identifier(
+                    Identifier::new(
+                        interner.get_or_intern_static("using", utf16!("using")),
+                        Span::new((1, 5), (1, 10)),
+                    ),
+                    Some(Literal::new(0, Span::new((1, 13), (1, 14))).into()),
+                )]
+                .try_into()
+                .unwrap(),
+            ))
+            .into(),
+            Statement::Expression(
+                Identifier::new(
+                    interner.get_or_intern_static("using", utf16!("using")),
+                    Span::new((1, 16), (1, 21)),
+                )
+                .into(),
+            )
+            .into(),
+        ],
+        interner,
+    );
+}
+
+/// Checks that `using` is a valid identifier reference in expressions.
+#[test]
+fn using_as_identifier_expressions() {
+    // All of these must parse: `using` is only a keyword where a `using`
+    // declaration can start.
+    for js in [
+        "var using = {}; !using['b'];",
+        "var using = {}; delete using['a'];",
+        "var using = {}; using.a = 1;",
+        "var using = {}; using;",
+        "var using = 0; using = 1;",
+        "var using = 0; using + 1;",
+        "var using = 0; typeof using;",
+        "using: 1;",
+        "var using = {}; for (using.a of []) {}",
+        "var using = {}; for (using['a'] of []) {}",
+        "var using = {}; for (using in {}) {}",
+        "var using = {}; ({using: 1});",
+        "var using = {}; ({using});",
+    ] {
+        let result = Parser::new(Source::from_bytes(js)).parse_script(
+            &boa_ast::scope::Scope::new_global(),
+            &mut Interner::default(),
+        );
+        assert!(result.is_ok(), "failed to parse {js:?}: {:?}", result.err());
+    }
+}
+
+/// Checks that `using` declarations still work when a binding identifier follows.
+#[test]
+fn using_declaration_still_parses() {
+    for js in [
+        "using x = resource;",
+        "using x = r1, y = r2;",
+        "for (using x of []) {}",
+        "for (using x = r;;) { break; }",
+    ] {
+        let result = Parser::new(Source::from_bytes(js)).parse_script(
+            &boa_ast::scope::Scope::new_global(),
+            &mut Interner::default(),
+        );
+        assert!(result.is_ok(), "failed to parse {js:?}: {:?}", result.err());
+    }
+}
+
+/// Checks the `[no LineTerminator here]` restriction of `using` declarations.
+#[test]
+fn using_declaration_no_line_terminator() {
+    // `using` followed by a line terminator is an identifier reference, so this
+    // is two statements: `using;` and `x = 1;`.
+    let interner = &mut Interner::default();
+    let result = Parser::new(Source::from_bytes("using\nx = 1;"))
+        .parse_script(&boa_ast::scope::Scope::new_global(), interner);
+    assert!(result.is_ok(), "failed to parse: {:?}", result.err());
+}
+
+/// Checks that `using` declarations are not allowed in the head of `for-in` loops.
+#[test]
+fn using_declaration_invalid_in_for_in() {
+    check_invalid_script("for (using x in {}) {}");
+}
+
+/// Checks that `using of` is not a `using` declaration in a for-of head.
+#[test]
+fn using_of_is_not_a_declaration_in_for_of() {
+    // `for (using of it)` iterates over `it`, assigning to the variable `using`
+    // (`[lookahead ≠ using of]` in the `ForInOfStatement` grammar).
+    let interner = &mut Interner::default();
+    let result = Parser::new(Source::from_bytes("for (using of it) {}"))
+        .parse_script(&boa_ast::scope::Scope::new_global(), interner);
+    assert!(result.is_ok(), "failed to parse: {:?}", result.err());
+}
+
+/// Checks that contextual keywords can be bound by a `using` declaration.
+#[test]
+fn using_declaration_contextual_keyword_bindings() {
+    // `of`, `async` and `using` itself are valid binding identifiers.
+    for js in [
+        "using of = r;",
+        "using using = r;",
+        "using async = r;",
+        "using yield = r;",
+    ] {
+        let result = Parser::new(Source::from_bytes(js)).parse_script(
+            &boa_ast::scope::Scope::new_global(),
+            &mut Interner::default(),
+        );
+        assert!(result.is_ok(), "failed to parse {js:?}: {:?}", result.err());
+    }
+}
+
+/// Checks that `using` can be used as a binding identifier in other declarations.
+#[test]
+fn using_as_binding_identifier() {
+    for js in [
+        "var using = 1;",
+        "let using = 1;",
+        "const using = 1;",
+        "function using() {}",
+        "function f(using) {}",
+        "class using {}",
+        "try {} catch (using) {}",
+        "for (var using of []) {}",
+        "var [using] = [];",
+        "var { using } = {};",
+        // Single-parameter arrow functions.
+        "using => 1;",
+        "async using => 1;",
+    ] {
+        let result = Parser::new(Source::from_bytes(js)).parse_script(
+            &boa_ast::scope::Scope::new_global(),
+            &mut Interner::default(),
+        );
+        assert!(result.is_ok(), "failed to parse {js:?}: {:?}", result.err());
+    }
 }

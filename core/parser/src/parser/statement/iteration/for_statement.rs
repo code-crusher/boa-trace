@@ -9,13 +9,13 @@
 
 use crate::{
     Error,
-    lexer::{Error as LexError, TokenKind},
+    lexer::{Error as LexError, Token, TokenKind},
     parser::{
         AllowAwait, AllowReturn, AllowYield, Cursor, OrAbrupt, ParseResult, TokenParser,
         expression::{AssignmentExpression, Expression},
         statement::{
             Statement,
-            declaration::{LexicalDeclaration, allowed_token_after_let},
+            declaration::{LexicalDeclaration, allowed_token_after_let, allowed_token_after_using},
             variable::VariableDeclarationList,
         },
     },
@@ -131,6 +131,19 @@ where
                     .parse(cursor, interner)?
                     .into(),
             ),
+            TokenKind::Keyword((Keyword::Using, false))
+                if allowed_token_after_using(cursor.peek_no_skip_line_term(1, interner)?)
+                    // `for (using of ...)` iterates over the expression, assigning to
+                    // the variable `using` (`[lookahead ≠ using of]` in the grammar).
+                    && cursor.peek(1, interner)?.map(Token::kind)
+                        != Some(&TokenKind::Keyword((Keyword::Of, false))) =>
+            {
+                Some(
+                    LexicalDeclaration::new(false, self.allow_yield, self.allow_await, true)
+                        .parse(cursor, interner)?
+                        .into(),
+                )
+            }
             TokenKind::Keyword((Keyword::Async, false)) if !r#await => {
                 if matches!(
                     cursor.peek(1, interner).or_abrupt()?.kind(),
@@ -389,6 +402,19 @@ fn initializer_to_iterable_loop_initializer(
                     Ok(match initializer.declaration() {
                         ast::declaration::LexicalDeclaration::Const(_) => {
                             IterableLoopInitializer::Const(decl.binding().clone())
+                        }
+                        ast::declaration::LexicalDeclaration::Using(_)
+                        | ast::declaration::LexicalDeclaration::AwaitUsing(_)
+                            if in_loop =>
+                        {
+                            return Err(Error::lex(LexError::Syntax(
+                                format!(
+                                    "a `using` declaration is not allowed in the head of a \
+                                     {loop_type} loop"
+                                )
+                                .into(),
+                                position,
+                            )));
                         }
                         ast::declaration::LexicalDeclaration::Let(_)
                         | ast::declaration::LexicalDeclaration::Using(_)
