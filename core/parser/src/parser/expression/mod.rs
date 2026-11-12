@@ -47,8 +47,9 @@ pub(in crate::parser) use {
     fpl_or_exp::FormalParameterListOrExpression,
     identifiers::{BindingIdentifier, LabelIdentifier},
     left_hand_side::LeftHandSideExpression,
-    primary::object_initializer::{
-        AsyncGeneratorMethod, AsyncMethod, GeneratorMethod, PropertyName,
+    primary::{
+        expression_to_formal_parameters,
+        object_initializer::{AsyncGeneratorMethod, AsyncMethod, GeneratorMethod, PropertyName},
     },
 };
 

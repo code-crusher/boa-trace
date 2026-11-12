@@ -351,3 +351,49 @@ fn function_constructor_nested_lexical_binding() {
         42,
     )]);
 }
+
+/// `async` is a valid identifier, so a function can be named `async` and called.
+///
+/// <https://github.com/boa-dev/boa/issues/5551>
+#[test]
+fn async_as_function_name_and_call() {
+    run_test_actions([TestAction::assert_eq(
+        indoc! {r#"
+            function async(cb) { return cb; }
+            async(1);
+        "#},
+        1,
+    )]);
+}
+
+#[test]
+fn async_as_binding_name() {
+    run_test_actions([TestAction::assert_eq(
+        indoc! {r#"
+            const async = 5;
+            async;
+        "#},
+        5,
+    )]);
+}
+
+#[test]
+fn async_identifier_at_end_of_input() {
+    run_test_actions([TestAction::assert_eq(
+        indoc! {r#"
+            const async = 5;
+            async"#},
+        5,
+    )]);
+}
+
+#[test]
+fn async_call_with_multiple_arguments() {
+    run_test_actions([TestAction::assert_eq(
+        indoc! {r#"
+            function async(a, b) { return a + b; }
+            async(1, 2);
+        "#},
+        3,
+    )]);
+}

@@ -899,3 +899,49 @@ fn await_using_valid_identifiers() {
         result.err()
     );
 }
+
+/// `async` is a valid identifier, so `export default async` must export its value instead of
+/// being treated as the start of an async function declaration.
+///
+/// <https://github.com/boa-dev/boa/issues/5551>
+#[test]
+fn export_default_async() {
+    let interner = &mut Interner::default();
+    let source = Source::from_bytes("export default async;");
+    let mut parser = Parser::new(source);
+    let scope = boa_ast::scope::Scope::new_global();
+    let result = parser.parse_module(&scope, interner);
+    assert!(
+        result.is_ok(),
+        "Failed to parse `export default async`: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn export_default_async_arrow() {
+    let interner = &mut Interner::default();
+    let source = Source::from_bytes("export default async () => {};");
+    let mut parser = Parser::new(source);
+    let scope = boa_ast::scope::Scope::new_global();
+    let result = parser.parse_module(&scope, interner);
+    assert!(
+        result.is_ok(),
+        "Failed to parse `export default async () => {{}}`: {:?}",
+        result.err()
+    );
+}
+
+#[test]
+fn export_default_async_function() {
+    let interner = &mut Interner::default();
+    let source = Source::from_bytes("export default async function () {}");
+    let mut parser = Parser::new(source);
+    let scope = boa_ast::scope::Scope::new_global();
+    let result = parser.parse_module(&scope, interner);
+    assert!(
+        result.is_ok(),
+        "Failed to parse `export default async function () {{}}`: {:?}",
+        result.err()
+    );
+}

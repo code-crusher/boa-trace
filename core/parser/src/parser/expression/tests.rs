@@ -1248,3 +1248,146 @@ fn check_non_reserved_identifiers() {
     check_non_reserved_identifier!("set");
     check_non_reserved_identifier!("target");
 }
+
+/// `async` used as the callee of a call expression, not as an async arrow function head.
+///
+/// <https://github.com/boa-dev/boa/issues/5551>
+#[test]
+fn parse_async_call() {
+    let interner = &mut Interner::default();
+    check_script_parser(
+        "async(1);",
+        vec![
+            Statement::Expression(Expression::from(Call::new(
+                Identifier::new(Sym::ASYNC, Span::new((1, 1), (1, 6))).into(),
+                Box::new([Literal::new(1, Span::new((1, 7), (1, 8))).into()]),
+                Span::new((1, 6), (1, 9)),
+            )))
+            .into(),
+        ],
+        interner,
+    );
+
+    let interner = &mut Interner::default();
+    check_script_parser(
+        "async(1) + 2;",
+        vec![
+            Statement::Expression(Expression::from(Binary::new(
+                ArithmeticOp::Add.into(),
+                Call::new(
+                    Identifier::new(Sym::ASYNC, Span::new((1, 1), (1, 6))).into(),
+                    Box::new([Literal::new(1, Span::new((1, 7), (1, 8))).into()]),
+                    Span::new((1, 6), (1, 9)),
+                )
+                .into(),
+                Literal::new(2, Span::new((1, 12), (1, 13))).into(),
+            )))
+            .into(),
+        ],
+        interner,
+    );
+}
+
+/// `async` at the end of the input must be parsed as an identifier, not as the start of an
+/// async arrow function (which previously produced an "abrupt end" error).
+///
+/// <https://github.com/boa-dev/boa/issues/5551>
+#[test]
+fn parse_async_identifier_at_eof() {
+    let interner = &mut Interner::default();
+    check_script_parser(
+        "const async = 5;\nasync",
+        vec![
+            Declaration::Lexical(LexicalDeclaration::Const(
+                vec![Variable::from_identifier(
+                    Identifier::new(Sym::ASYNC, Span::new((1, 7), (1, 12))),
+                    Some(Literal::new(5, Span::new((1, 15), (1, 16))).into()),
+                )]
+                .try_into()
+                .unwrap(),
+            ))
+            .into(),
+            Statement::Expression(Identifier::new(Sym::ASYNC, Span::new((2, 1), (2, 6))).into())
+                .into(),
+        ],
+        interner,
+    );
+}
+
+#[test]
+fn parse_async_arrow_expressions() {
+    let interner = &mut Interner::default();
+    check_script_parser(
+        "async () => {}",
+        vec![
+            Statement::Expression(
+                AsyncArrowFunction::new(
+                    None,
+                    FormalParameterList::default(),
+                    FunctionBody::new(StatementList::default(), Span::new((1, 13), (1, 15))),
+                    LinearSpan::new(LinearPosition::default(), LinearPosition::default()),
+                    Span::new((1, 1), (1, 15)),
+                )
+                .into(),
+            )
+            .into(),
+        ],
+        interner,
+    );
+
+    let interner = &mut Interner::default();
+    check_script_parser(
+        "async (a) => a",
+        vec![
+            Statement::Expression(
+                AsyncArrowFunction::new(
+                    None,
+                    FormalParameterList::from_parameters(vec![FormalParameter::new(
+                        Variable::from_identifier(
+                            Identifier::new(
+                                interner.get_or_intern_static("a", utf16!("a")),
+                                Span::new((1, 8), (1, 9)),
+                            ),
+                            None,
+                        ),
+                        false,
+                    )]),
+                    FunctionBody::new(
+                        StatementList::new(
+                            vec![boa_ast::StatementListItem::Statement(Box::new(
+                                Statement::Return(boa_ast::statement::Return::new(Some(
+                                    Identifier::new(
+                                        interner.get_or_intern_static("a", utf16!("a")),
+                                        Span::new((1, 14), (1, 15)),
+                                    )
+                                    .into(),
+                                ))),
+                            ))],
+                            LinearPosition::default(),
+                            false,
+                        ),
+                        Span::new((1, 14), (1, 15)),
+                    ),
+                    LinearSpan::new(LinearPosition::default(), LinearPosition::default()),
+                    Span::new((1, 1), (1, 15)),
+                )
+                .into(),
+            )
+            .into(),
+        ],
+        interner,
+    );
+}
+
+/// `async(...)` followed by `=>` is an async arrow function, so its arguments must be valid
+/// formal parameters.
+#[test]
+fn parse_invalid_async_arrow() {
+    check_invalid_script("async (1) => {}");
+    check_invalid_script("async (...rest,) => {}");
+    check_invalid_script("async (await) => {}");
+    check_invalid_script("async (a, a) => {}");
+    check_invalid_script("async\n(a) => {}");
+    check_invalid_script("async (a)\n=> {}");
+    check_invalid_script(r"as\u{79}nc(a) => {}");
+}
