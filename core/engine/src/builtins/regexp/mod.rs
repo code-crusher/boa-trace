@@ -798,7 +798,18 @@ impl RegExp {
         } else {
             let mut s = Vec::with_capacity(src.len());
             let mut buf = [0; 2];
+            let mut escaped = false;
             for c in src.code_points() {
+                // If the code point is already escaped by a preceding `\`, keep the existing
+                // escape instead of adding another one.
+                if escaped
+                    && matches!(
+                        c,
+                        CodePoint::Unicode('/' | '\n' | '\r' | '\u{2028}' | '\u{2029}')
+                    )
+                {
+                    s.pop();
+                }
                 match c {
                     CodePoint::Unicode('/') => s.extend_from_slice(utf16!(r"\/")),
                     CodePoint::Unicode('\n') => s.extend_from_slice(utf16!(r"\n")),
@@ -808,6 +819,7 @@ impl RegExp {
                     CodePoint::Unicode(c) => s.extend_from_slice(c.encode_utf16(&mut buf)),
                     CodePoint::UnpairedSurrogate(surr) => s.push(surr),
                 }
+                escaped = !escaped && c == CodePoint::Unicode('\\');
             }
 
             JsValue::new(js_string!(&s[..]))
