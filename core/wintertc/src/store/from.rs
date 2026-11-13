@@ -151,6 +151,27 @@ fn clone_typed_array(
     Ok(dolly)
 }
 
+fn clone_data_view(
+    original: &JsObject,
+    data_view: &JsDataView,
+    transfer: &FxHashSet<JsObject>,
+    seen: &mut SeenMap,
+    context: &mut Context,
+) -> JsResult<JsValueStore> {
+    let buffer = data_view.buffer(context)?;
+    let byte_length = data_view.byte_length(context)?;
+    let byte_offset = data_view.byte_offset(context)?;
+
+    let buffer = try_from_js_value(&buffer, transfer, seen, context)?;
+    let dolly = JsValueStore::new(ValueStoreInner::DataView {
+        buffer,
+        byte_length,
+        byte_offset,
+    });
+    seen.insert(original, dolly.clone());
+    Ok(dolly)
+}
+
 fn clone_date(
     original: &JsObject,
     date: &JsDate,
@@ -262,8 +283,8 @@ fn try_from_js_object_clone(
         return Err(js_error!(TypeError: "Errors are not supported yet."));
     } else if let Ok(ref regexp) = JsRegExp::from_object(object.clone()) {
         return clone_regexp(object, regexp, seen, context);
-    } else if let Ok(_dataview) = JsDataView::from_object(object.clone()) {
-        return Err(js_error!(TypeError: "Data views are not supported yet."));
+    } else if let Ok(ref data_view) = JsDataView::from_object(object.clone()) {
+        return clone_data_view(object, data_view, transfer, seen, context);
     } else if object.is_callable() {
         // Functions are invalid.
         return Err(unsupported_type());
