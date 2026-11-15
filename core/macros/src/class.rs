@@ -619,6 +619,8 @@ impl ClassVisitor {
                 const NAME: &'static str = #class_name;
                 const LENGTH: usize = #arg_count;
 
+                type Parent = boa_engine::class::NoParent;
+
                 fn data_constructor(
                     this: &boa_engine::JsValue,
                     args: &[boa_engine::JsValue],

@@ -57,6 +57,9 @@ impl Class for Person {
     // We set the binding name of this function to `"Person"`.
     // It does not have to be `"Person"`, it can be any string.
     const NAME: &'static str = "Person";
+
+    // `Person` is a root class, so it has no parent.
+    type Parent = boa_engine::class::NoParent;
     // We set the length to `2` since we accept 2 arguments in the constructor.
     //
     // This is the same as `Object.length`.
