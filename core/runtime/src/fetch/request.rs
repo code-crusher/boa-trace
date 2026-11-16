@@ -25,6 +25,7 @@ pub struct RequestInit {
     headers: Option<JsHeaders>,
     method: Option<Convert<JsString>>,
     signal: Option<JsObject>,
+    window: Option<JsValue>,
 }
 
 impl RequestInit {
@@ -42,6 +43,14 @@ impl RequestInit {
         request: Option<HttpRequest<Option<Vec<u8>>>>,
     ) -> JsResult<HttpRequest<Option<Vec<u8>>>> {
         let mut builder = HttpRequest::builder();
+        // https://fetch.spec.whatwg.org/#dom-request - "If init["window"] exists and is non-null, then throw a TypeError."
+        if let Some(window) = self.window.as_ref()
+            && !window.is_null()
+        {
+            return Err(js_error!(
+                TypeError: "'window' option 'client' must be null"
+            ));
+        }
         // https://fetch.spec.whatwg.org/#dom-request - "Let inputBody be input's request's body if input is a Request object; otherwise null."
         let mut inherited_body = None;
         if let Some(r) = request {

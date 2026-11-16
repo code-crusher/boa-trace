@@ -72,6 +72,43 @@ fn request_constructor_forbidden_method_throws() {
 }
 
 #[test]
+fn request_constructor_non_null_window_throws() {
+    run_test_actions([
+        TestAction::inspect_context(|ctx| {
+            let fetcher = TestFetcher::default();
+            crate::fetch::register(fetcher, None, ctx).expect("failed to register fetch");
+        }),
+        TestAction::run(indoc! {r#"
+            for (const window of [1, "test", true, {}, () => {}]) {
+                try {
+                    new Request("http://unit.test", { window });
+                    throw Error("expected the call above to throw");
+                } catch (e) {
+                    if (!(e instanceof TypeError)) {
+                        throw e;
+                    }
+                }
+            }
+        "#}),
+    ]);
+}
+
+#[test]
+fn request_constructor_null_window_does_not_throw() {
+    run_test_actions([
+        TestAction::inspect_context(|ctx| {
+            let fetcher = TestFetcher::default();
+            crate::fetch::register(fetcher, None, ctx).expect("failed to register fetch");
+        }),
+        TestAction::run(indoc! {r#"
+            new Request("http://unit.test", { window: null });
+            new Request("http://unit.test", { window: undefined });
+            new Request("http://unit.test");
+        "#}),
+    ]);
+}
+
+#[test]
 fn request_constructor_get_with_body_throws() {
     run_test_actions([
         TestAction::inspect_context(|ctx| {
