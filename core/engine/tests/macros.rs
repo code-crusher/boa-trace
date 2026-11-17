@@ -8,13 +8,14 @@ use boa_string::JsString;
 
 #[test]
 fn try_from_js_derive() {
-    #[derive(Debug, TryFromJs, Eq, PartialEq)]
+    #[derive(Debug, TryFromJs, PartialEq)]
     struct TryFromJsTest {
         a: JsString,
         #[boa(rename = "bBB")]
         b: i32,
         #[boa(from_js_with = "check_tfj_called")]
         c: i32,
+        d: f32,
     }
 
     fn check_tfj_called(value: &JsValue, context: &mut Context) -> JsResult<i32> {
@@ -24,7 +25,9 @@ fn try_from_js_derive() {
 
     let mut context = Context::default();
     let obj = context
-        .eval(Source::from_bytes(br#"({ a: "hello", bBB: 42, c: 120 })"#))
+        .eval(Source::from_bytes(
+            br#"({ a: "hello", bBB: 42, c: 120, d: 1.5 })"#,
+        ))
         .unwrap();
 
     let result = TryFromJsTest::try_from_js(&obj, &mut context).unwrap();
@@ -33,7 +36,8 @@ fn try_from_js_derive() {
         TryFromJsTest {
             a: js_string!("hello"),
             b: 42,
-            c: 60
+            c: 60,
+            d: 1.5
         }
     );
 }

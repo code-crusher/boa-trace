@@ -15,22 +15,20 @@ mod tuples;
 /// [`TryFromJs`] is implemented for [`f64`] because JavaScript numbers are IEEE-754
 /// double-precision values, so that conversion is exact.
 ///
-/// It is intentionally **not** implemented for [`f32`]. Converting a JS number to
-/// `f32` can lose precision, and Rust prefers that loss to be explicit. Convert to
-/// [`f64`] first, then cast with `as f32`:
+/// It is also implemented for [`f32`], but note that JavaScript numbers are [`f64`],
+/// so the conversion rounds to the nearest `f32` value and may lose precision. Values
+/// that overflow the `f32` range become [`f32::INFINITY`] or [`f32::NEG_INFINITY`].
+/// This mirrors the explicit `as f32` cast:
 ///
 /// ```
 /// # use boa_engine::{Context, JsResult, JsValue, value::TryFromJs};
 /// fn to_f32(value: &JsValue, context: &mut Context) -> JsResult<f32> {
-///     Ok(f64::try_from_js(value, context)? as f32)
+///     f32::try_from_js(value, context)
 /// }
 /// ```
 ///
-/// For derived structs with an `f32` field, use
-/// `#[boa(from_js_with = "...")]` to supply a custom converter.
-///
 /// If you want JavaScript-style coercion (for example accepting numeric strings),
-/// use [`JsValue::to_f32`] instead. That path is also lossy by design.
+/// use [`JsValue::to_f32`] instead.
 pub trait TryFromJs: Sized {
     /// This function tries to convert a JavaScript value into `Self`.
     fn try_from_js(value: &JsValue, context: &mut Context) -> JsResult<Self>;
@@ -196,6 +194,47 @@ impl TryFromJs for f64 {
                 .into())
         }
     }
+}
+
+impl TryFromJs for f32 {
+    fn try_from_js(value: &JsValue, _context: &mut Context) -> JsResult<Self> {
+        if let Some(i) = value.0.as_integer32() {
+            Ok(i as Self)
+        } else if let Some(f) = value.0.as_float64() {
+            Ok(f as Self)
+        } else {
+            Err(JsNativeError::typ()
+                .with_message("cannot convert value to a f32")
+                .into())
+        }
+    }
+}
+
+#[test]
+fn numeric_js_value_to_f32() {
+    let context = &mut Context::default();
+
+    assert_eq!(f32::try_from_js(&JsValue::from(4), context), Ok(4.0));
+    assert_eq!(f32::try_from_js(&JsValue::from(1.5), context), Ok(1.5));
+    assert_eq!(
+        f32::try_from_js(&JsValue::positive_infinity(), context),
+        Ok(f32::INFINITY)
+    );
+    assert_eq!(
+        f32::try_from_js(&JsValue::negative_infinity(), context),
+        Ok(f32::NEG_INFINITY)
+    );
+
+    // Values outside the `f32` range saturate to infinity, like an `as f32` cast.
+    assert_eq!(
+        f32::try_from_js(&JsValue::from(f64::MAX), context),
+        Ok(f32::INFINITY)
+    );
+
+    // `NaN` is preserved.
+    assert!(f32::try_from_js(&JsValue::nan(), context).unwrap().is_nan());
+
+    assert!(f32::try_from_js(&JsValue::from(JsString::from("not a number")), context).is_err());
 }
 
 fn from_f64<T>(v: f64) -> Option<T>
