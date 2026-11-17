@@ -47,12 +47,48 @@ impl crate::fetch::Fetcher for TestFetcher {
         let request = request.into_inner();
         self.requests_received.borrow_mut().push(request.clone());
         let url = request.uri();
-        std::future::ready(
-            self.request_mapper
-                .get(url)
-                .cloned()
-                .map(|response| JsResponse::basic(JsString::from(url.to_string()), response))
-                .ok_or_else(|| js_error!("No response found for URL")),
-        )
+        std::future::ready((|| {
+            // Simulate the redirect handling of a real fetcher: follow
+            // redirections (resolving each `location` against the current URL)
+            // until a final response is reached, and report the final URL with
+            // `redirected` set accordingly.
+            // See https://fetch.spec.whatwg.org/#dom-response-url
+            // See https://fetch.spec.whatwg.org/#dom-response-redirected
+            let mut current = url.clone();
+            let mut redirected = false;
+
+            for _ in 0..20 {
+                let Some(response) = self.request_mapper.get(&current).cloned() else {
+                    return Err(js_error!("No response found for URL"));
+                };
+
+                if !response.status().is_redirection() {
+                    return Ok(
+                        JsResponse::basic(JsString::from(current.to_string()), response)
+                            .with_redirected(redirected),
+                    );
+                }
+
+                let location = response
+                    .headers()
+                    .get(http::header::LOCATION)
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| js_error!("Redirect response without a valid location"))?;
+
+                // `Url::join` resolves the `location` against the current URL,
+                // for both relative and absolute locations.
+                let base = url::Url::parse(&current.to_string())
+                    .map_err(|_| js_error!(TypeError: "Invalid URL: {current}"))?;
+                let next = base
+                    .join(location)
+                    .map_err(|_| js_error!(TypeError: "Invalid redirect location: {location}"))?;
+                current = Uri::try_from(next.as_str())
+                    .map_err(|_| js_error!(TypeError: "Invalid URL: {next}"))?;
+
+                redirected = true;
+            }
+
+            Err(js_error!("Too many redirects"))
+        })())
     }
 }

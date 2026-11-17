@@ -83,6 +83,14 @@ impl Fetcher for BlockingReqwestFetcher {
 
         let status = resp.status();
         let headers = resp.headers().clone();
+        // The response of a redirected request must report the final URL and
+        // `redirected == true`, per the fetch spec. `reqwest` follows redirects
+        // transparently, so compare the final URL against the requested one to
+        // detect a redirect.
+        // See https://fetch.spec.whatwg.org/#dom-response-url
+        // See https://fetch.spec.whatwg.org/#dom-response-redirected
+        let final_url = resp.url().to_string();
+        let redirected = final_url != url;
         let bytes = match resp.bytes().map_err(JsError::from_rust) {
             Ok(bytes) => bytes,
             Err(err) => return future::ready(Err(err)),
@@ -99,7 +107,11 @@ impl Fetcher for BlockingReqwestFetcher {
             builder
                 .body(bytes.to_vec())
                 .map_err(JsError::from_rust)
-                .map(|request| JsResponse::basic(JsString::from(url), request)),
+                .map(|response| {
+                    let mut response = JsResponse::basic(JsString::from(final_url), response);
+                    response.set_redirected(redirected);
+                    response
+                }),
         )
     }
 }

@@ -347,6 +347,174 @@ fn response_json_static() {
 }
 
 #[test]
+fn fetch_follows_redirect_reports_final_url_and_redirected() {
+    run_test_actions([
+        TestAction::harness(),
+        TestAction::inspect_context(|ctx| {
+            let redirect = Response::builder()
+                .status(302)
+                .header("location", "http://unit.test/target")
+                .body(Vec::new())
+                .unwrap();
+            let target = Response::new(b"Hello Target".to_vec());
+            register(
+                &[
+                    ("http://unit.test/redirect", redirect),
+                    ("http://unit.test/target", target),
+                ],
+                ctx,
+            );
+        }),
+        TestAction::run(
+            r#"
+                globalThis.response = (async () => {
+                    const response = await fetch("http://unit.test/redirect");
+
+                    // After following the redirect, the response must report the
+                    // final URL and `redirected == true`.
+                    // See https://fetch.spec.whatwg.org/#dom-response-url
+                    assertEq(response.redirected, true);
+                    assertEq(response.url, "http://unit.test/target");
+
+                    const text = await response.text();
+                    assertEq(text, "Hello Target");
+                })();
+            "#,
+        ),
+        TestAction::inspect_context(|ctx| {
+            let response = ctx.global_object().get(js_str!("response"), ctx).unwrap();
+            response.as_promise().unwrap().await_blocking(ctx).unwrap();
+        }),
+    ]);
+}
+
+#[test]
+fn fetch_without_redirect_reports_original_url_and_not_redirected() {
+    run_test_actions([
+        TestAction::harness(),
+        TestAction::inspect_context(|ctx| {
+            register(
+                &[("http://unit.test", Response::new(b"Hello World".to_vec()))],
+                ctx,
+            );
+        }),
+        TestAction::run(
+            r#"
+                globalThis.response = (async () => {
+                    const response = await fetch("http://unit.test");
+
+                    assertEq(response.redirected, false);
+                    assertEq(response.url, "http://unit.test/");
+                })();
+            "#,
+        ),
+        TestAction::inspect_context(|ctx| {
+            let response = ctx.global_object().get(js_str!("response"), ctx).unwrap();
+            response.as_promise().unwrap().await_blocking(ctx).unwrap();
+        }),
+    ]);
+}
+
+#[test]
+fn response_redirect_url_strips_fragment() {
+    run_test_actions([
+        TestAction::harness(),
+        TestAction::inspect_context(|ctx| {
+            let redirect = Response::builder()
+                .status(302)
+                .header("location", "/target#frag")
+                .body(Vec::new())
+                .unwrap();
+            let target = Response::new(b"frag target".to_vec());
+            register(
+                &[
+                    ("http://unit.test/redirect", redirect),
+                    ("http://unit.test/target", target),
+                ],
+                ctx,
+            );
+        }),
+        TestAction::run(
+            r#"
+                globalThis.response = (async () => {
+                    const response = await fetch("http://unit.test/redirect");
+
+                    assertEq(response.redirected, true);
+                    // `response.url` is serialized with "exclude fragment" set.
+                    // See https://fetch.spec.whatwg.org/#dom-response-url
+                    assertEq(response.url, "http://unit.test/target");
+                })();
+            "#,
+        ),
+        TestAction::inspect_context(|ctx| {
+            let response = ctx.global_object().get(js_str!("response"), ctx).unwrap();
+            response.as_promise().unwrap().await_blocking(ctx).unwrap();
+        }),
+    ]);
+}
+
+#[test]
+fn response_clone_preserves_redirected() {
+    run_test_actions([
+        TestAction::harness(),
+        TestAction::inspect_context(|ctx| {
+            let redirect = Response::builder()
+                .status(302)
+                .header("location", "http://unit.test/target")
+                .body(Vec::new())
+                .unwrap();
+            let target = Response::new(b"ok".to_vec());
+            register(
+                &[
+                    ("http://unit.test/redirect", redirect),
+                    ("http://unit.test/target", target),
+                ],
+                ctx,
+            );
+        }),
+        TestAction::run(
+            r#"
+                globalThis.response = (async () => {
+                    const response = await fetch("http://unit.test/redirect");
+                    const cloned = response.clone();
+
+                    assertEq(cloned.redirected, true);
+                    assertEq(cloned.url, response.url);
+                })();
+            "#,
+        ),
+        TestAction::inspect_context(|ctx| {
+            let response = ctx.global_object().get(js_str!("response"), ctx).unwrap();
+            response.as_promise().unwrap().await_blocking(ctx).unwrap();
+        }),
+    ]);
+}
+
+#[test]
+fn response_redirect_methods_not_redirected() {
+    run_test_actions([
+        TestAction::harness(),
+        TestAction::inspect_context(|ctx| register(&[], ctx)),
+        TestAction::run(
+            r#"
+                // Responses created directly (not via fetch) are never redirected,
+                // even if they carry a redirect status.
+                // See https://fetch.spec.whatwg.org/#dom-response-redirected
+                const response = Response.redirect("http://example.com/", 302);
+                assertEq(response.redirected, false);
+                assertEq(response.url, "");
+
+                const constructed = new Response();
+                assertEq(constructed.redirected, false);
+
+                const errored = Response.error();
+                assertEq(errored.redirected, false);
+            "#,
+        ),
+    ]);
+}
+
+#[test]
 fn response_headers_get_combines_duplicate_values_with_comma_space() {
     run_test_actions([
         TestAction::harness(),

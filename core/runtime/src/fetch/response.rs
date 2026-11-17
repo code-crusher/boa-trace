@@ -126,6 +126,15 @@ fn is_valid_reason_phrase(s: &str) -> bool {
 pub struct JsResponse {
     url: JsString,
 
+    /// Whether the request that produced this response was redirected.
+    ///
+    /// The spec tracks the full URL list of a response; since Boa only stores the
+    /// final URL, this is a boolean summary of "the URL list has more than one entry".
+    ///
+    /// See <https://fetch.spec.whatwg.org/#concept-response-url-list>
+    #[unsafe_ignore_trace]
+    redirected: bool,
+
     #[unsafe_ignore_trace]
     r#type: ResponseType,
 
@@ -157,6 +166,7 @@ impl JsResponse {
 
         Self {
             url,
+            redirected: false,
             r#type: ResponseType::Basic,
             status,
             status_text,
@@ -172,6 +182,7 @@ impl JsResponse {
     pub fn error() -> Self {
         Self {
             url: js_string!(""),
+            redirected: false,
             r#type: ResponseType::Error,
             // A network error's status is always 0.
             // See https://fetch.spec.whatwg.org/#concept-network-error
@@ -186,6 +197,25 @@ impl JsResponse {
     #[must_use]
     pub fn body(&self) -> Rc<Vec<u8>> {
         self.body.clone()
+    }
+
+    /// Set whether this response is the result of a redirect.
+    ///
+    /// This is used by fetchers that transparently follow redirects, to mark the
+    /// final response as redirected.
+    ///
+    /// See <https://fetch.spec.whatwg.org/#dom-response-redirected>
+    pub fn set_redirected(&mut self, redirected: bool) {
+        self.redirected = redirected;
+    }
+
+    /// Return a copy of this response marked as (not) redirected.
+    ///
+    /// See [`JsResponse::set_redirected`] for details.
+    #[must_use]
+    pub fn with_redirected(mut self, redirected: bool) -> Self {
+        self.set_redirected(redirected);
+        self
     }
 }
 
@@ -265,6 +295,7 @@ fn initialize_response(
 
     Ok(JsResponse {
         url: js_string!(""),
+        redirected: false,
         r#type: ResponseType::Default,
         status,
         status_text,
@@ -359,6 +390,7 @@ impl JsResponse {
 
         Ok(Self {
             url: js_string!(""),
+            redirected: false,
             r#type: ResponseType::Default,
             status: status_code.as_u16(),
             status_text: JsString::from(status_code.canonical_reason().unwrap_or("")),
@@ -479,17 +511,16 @@ impl JsResponse {
     ///
     /// See <https://fetch.spec.whatwg.org/#dom-response-redirected>
     #[boa(getter)]
-    #[allow(clippy::unused_self)]
     fn redirected(&self) -> bool {
         // The spec says: return true if this's response's URL list's size is greater than 1.
-        // TODO: track the full URL list to implement this properly.
-        false
+        self.redirected
     }
 
     #[boa(rename = "clone")]
     fn clone_response(&self) -> Self {
         Self {
             url: self.url.clone(),
+            redirected: self.redirected,
             r#type: self.r#type,
             status: self.status,
             status_text: self.status_text.clone(),
