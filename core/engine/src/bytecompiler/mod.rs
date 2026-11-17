@@ -37,7 +37,7 @@ mod utils;
 use std::{
     borrow::{Borrow, BorrowMut},
     cell::Cell,
-    ops::{Deref, DerefMut},
+    ops::{ControlFlow, Deref, DerefMut},
 };
 
 use crate::{
@@ -61,9 +61,9 @@ use boa_ast::{
         literal::ObjectMethodDefinition,
         operator::{
             Binary,
-            assign::AssignTarget,
+            assign::{Assign, AssignTarget},
             binary::{BinaryOp, RelationalOp},
-            update::UpdateTarget,
+            update::{Update, UpdateTarget},
         },
     },
     function::{
@@ -72,10 +72,11 @@ use boa_ast::{
         FormalParameterList, FunctionBody, FunctionDeclaration, FunctionExpression,
         GeneratorDeclaration, GeneratorExpression, PrivateName,
     },
-    operations::returns_value,
+    operations::{bound_names, returns_value},
     pattern::Pattern,
     property::MethodDefinitionKind,
     scope::{BindingLocator, BindingLocatorError, FunctionScopes, IdentifierReference, Scope},
+    visitor::{VisitWith, Visitor},
 };
 use boa_gc::Gc;
 use boa_interner::{Interner, Sym};
@@ -401,6 +402,52 @@ pub(crate) struct HoistedOperand {
     pub(crate) register: Register,
     /// `true` if this operand is the RHS of the comparison (e.g. `10` in `i < 10`).
     pub(crate) is_rhs: bool,
+}
+
+/// Collects the symbols of every binding an expression may write through.
+///
+/// Used to decide whether a forwarded local register must be snapshotted
+/// before compiling a subexpression that may clobber it. `Assign` writes to a
+/// binding or a destructuring pattern; `Update` writes to its identifier
+/// target. Property accesses (`a.b = c`, `a[b]++`) are not binding writes and
+/// are ignored. Read-only subtrees (calls, literals, reads) contribute nothing.
+struct WriteCollector {
+    writes: Vec<Sym>,
+}
+
+impl Visitor<'_> for WriteCollector {
+    type BreakTy = ();
+
+    fn visit_assign(&mut self, node: &Assign) -> ControlFlow<Self::BreakTy> {
+        match node.lhs() {
+            AssignTarget::Identifier(ident) => self.writes.push(ident.sym()),
+            AssignTarget::Access(_) => {}
+            AssignTarget::Pattern(pattern) => {
+                self.writes.extend(bound_names(pattern));
+            }
+        }
+        // Keep walking to catch nested writes in the default initializers of
+        // destructuring patterns and in the right-hand side expression.
+        node.visit_with(self)
+    }
+
+    fn visit_update(&mut self, node: &Update) -> ControlFlow<Self::BreakTy> {
+        if let UpdateTarget::Identifier(ident) = node.target() {
+            self.writes.push(ident.sym());
+        }
+        node.visit_with(self)
+    }
+}
+
+/// Returns `true` if `expr` may assign to the binding with symbol `name`.
+///
+/// This is a syntactic approximation: it may report writes to a shadowed
+/// binding with the same name, which is harmless because it only causes the
+/// compiler to take a snapshot it may not strictly need.
+fn expression_writes_binding(expr: &Expression, name: Sym) -> bool {
+    let mut collector = WriteCollector { writes: Vec::new() };
+    let _ = expr.visit_with(&mut collector);
+    collector.writes.contains(&name)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1373,7 +1420,7 @@ impl<'ctx> ByteCompiler<'ctx> {
                 });
             }
             None => {
-                self.compile_expr_operand(binary.lhs(), |compiler, lhs| {
+                self.compile_expr_operand_guarded(binary.lhs(), Some(binary.rhs()), |compiler, lhs| {
                     compiler.compile_expr_operand(binary.rhs(), |compiler, rhs| {
                         label_index = compiler.next_opcode_location();
                         emit_fn(&mut compiler.bytecode, Self::DUMMY_ADDRESS, lhs, rhs);
@@ -1825,11 +1872,43 @@ impl<'ctx> ByteCompiler<'ctx> {
         expr: &Expression,
         inner_fn: impl FnOnce(&mut Self, RegisterOperand),
     ) {
+        self.compile_expr_operand_guarded(expr, None, inner_fn);
+    }
+
+    /// Compile an operand like [`Self::compile_expr_operand`], but when `guard`
+    /// is provided and the operand resolves to a local's persistent register,
+    /// snapshot the local into a temporary if `guard` may write to the same
+    /// binding.
+    ///
+    /// This is used when the operand's consumer is compiled *after* `guard`
+    /// (e.g. `a + (a = 5)` compiles the left-hand side first but reads it
+    /// after the right-hand side has been compiled). Without the snapshot, a
+    /// local's register forwarded by value would observe the post-write value,
+    /// contrary to the evaluation order required by the spec.
+    pub(crate) fn compile_expr_operand_guarded(
+        &mut self,
+        expr: &Expression,
+        guard: Option<&Expression>,
+        inner_fn: impl FnOnce(&mut Self, RegisterOperand),
+    ) {
         if let Expression::Identifier(name) = expr {
+            let name_sym = name.sym();
             let name = self.resolve_identifier_expect(*name);
             let binding = self.lexical_scope.get_identifier_reference(name);
             let index = self.get_binding(&binding);
             if let BindingKind::Local(Some(local_reg)) = &index {
+                if let Some(guard) = guard
+                    && expression_writes_binding(guard, name_sym)
+                {
+                    // The guard may overwrite the local's register before the
+                    // consumer reads it; evaluate it into a temporary instead.
+                    let reg = self.register_allocator.alloc();
+                    self.bytecode.emit_move(reg.variable(), (*local_reg).into());
+                    let op = reg.variable();
+                    inner_fn(self, op);
+                    self.register_allocator.dealloc(reg);
+                    return;
+                }
                 inner_fn(self, RegisterOperand::from(*local_reg));
                 return;
             }

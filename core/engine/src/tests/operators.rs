@@ -950,3 +950,96 @@ fn instanceof_custom_has_instance() {
         "#}),
     ]);
 }
+
+#[test]
+fn assignment_side_effect_in_rhs_operand() {
+    // Regression tests for issue #5545: the LHS of a binary operator must
+    // observe its value *before* the RHS is evaluated, even when the RHS
+    // writes to the same local binding.
+    run_test_actions([
+        // The original report: `n + ++n` must be 3.
+        TestAction::assert_eq("{ let n = 1; n + ++n }", 3),
+        TestAction::assert_eq("{ let a = 1; a + a++ }", 2),
+        TestAction::assert_eq("{ let a = 1; a - ++a }", -1),
+        TestAction::assert_eq("{ let a = 2; a * (a += 3) }", 10),
+        TestAction::assert_eq("{ let a = 2; a + (a *= 3) }", 8),
+        TestAction::assert_eq("{ let a = 2; a + (a **= 3) }", 10),
+        TestAction::assert_eq("{ let a = 5; a + (a += 2) }", 12),
+        TestAction::assert_eq("{ let a = 10; a + (a -= 4) }", 16),
+        TestAction::assert_eq("{ let a = 12; a + (a /= 4) }", 15),
+        TestAction::assert_eq("{ let a = 10; a + (a %= 3) }", 11),
+        TestAction::assert_eq("{ let a = 1; a + (a = 5) }", 6),
+        TestAction::assert_eq("{ let a = 5; a + (0, a = 5) }", 10),
+        // Bitwise operations.
+        TestAction::assert_eq("{ let a = 6; a + (a &= 3) }", 8),
+        TestAction::assert_eq("{ let a = 2; a + (a |= 5) }", 9),
+        TestAction::assert_eq("{ let a = 5; a + (a ^= 3) }", 11),
+        TestAction::assert_eq("{ let a = 8; a + (a <<= 1) }", 24),
+        TestAction::assert_eq("{ let a = 16; a + (a >>= 2) }", 20),
+        // Relational operations, including the fused comparison path.
+        TestAction::assert("{ let a = 1; a < (a += 2) }"),
+        TestAction::assert("{ let a = 1; a <= (a += 1) }"),
+        TestAction::assert("{ let a = 1; a > (a = 0) }"),
+        TestAction::assert("{ let a = 1; a === (a = 1) }"),
+        TestAction::assert(indoc! {r#"
+            !(() => { let a = 1; return a !== (a = 1); })()
+        "#}),
+        TestAction::assert("{ let a = 1; a < (a + 1) }"),
+        // Writes through destructuring patterns in the RHS.
+        TestAction::assert_eq(
+            indoc! {r#"
+                { let a = 1, b = 2; a + ([b, a] = [10, 20], b) }
+            "#},
+            11,
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                { let a = 1; let r = a + ([[a]] = [[77]], a); r }
+            "#},
+            78,
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                { let a = 1; a + ({a} = {a: 42}, a) }
+            "#},
+            43,
+        ),
+        // Ternary and call expressions in the RHS.
+        TestAction::assert_eq("{ let a = 1, c = true; a + (c ? a = 2 : a = 3) }", 3),
+        TestAction::assert_eq("{ let b = 1, d = false; b + (d ? b = 2 : b = 3) }", 4),
+        // Template expressions evaluate their substitutions.
+        TestAction::assert_eq("{ let a = 1; a + +`${a = 2, 3}` }", 4),
+        // Tagged templates evaluate their substitutions.
+        TestAction::assert_eq(
+            "{ let a = 1; const tag = (s, ...v) => v[0]; a + tag`${a = 2}` }",
+            3,
+        ),
+        // Static class field initializer / static block writing to an outer binding.
+        TestAction::assert_eq(
+            indoc! {r#"
+                { let a = 1;
+                class C { static x = (a = 9, 0); }
+                a * a }
+            "#},
+            81,
+        ),
+        TestAction::assert_eq(
+            indoc! {r#"
+                { let a = 1;
+                class C { static { a = 9; } }
+                a * a }
+            "#},
+            81,
+        ),
+        // Member access compound assignment is not affected by the local snapshot.
+        TestAction::assert_eq("{ const o = { x: 1 }; o.x + (o.x += 5) }", 7),
+        // Shadowed bindings with the same name are unaffected.
+        TestAction::assert_eq(
+            "{ const f = (a) => { const g = (a) => (a = 100); g(9); return a; }; f(1) }",
+            1,
+        ),
+        // Nested parentheses around the update expression.
+        TestAction::assert_eq("{ let a = 1; a + (((a))++) }", 2),
+        TestAction::assert_eq("{ let a = 1; a + ((a *= 2)) }", 3),
+    ]);
+}

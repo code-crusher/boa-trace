@@ -17,12 +17,14 @@ impl ByteCompiler<'_> {
     pub(crate) fn compile_binary(&mut self, binary: &Binary, dst: &Register) {
         match binary.op() {
             BinaryOp::Arithmetic(op) => {
-                self.compile_expr_operand(binary.lhs(), |self_, lhs| {
+                // Snapshot the LHS into a temporary when the RHS writes to the
+                // same binding, so the LHS observes its value *before* the RHS runs.
+                self.compile_expr_operand_guarded(binary.lhs(), Some(binary.rhs()), |self_, lhs| {
                     self_.compile_binary_arithmetic(op, binary.rhs(), dst, lhs);
                 });
             }
             BinaryOp::Bitwise(op) => {
-                self.compile_expr_operand(binary.lhs(), |self_, lhs| {
+                self.compile_expr_operand_guarded(binary.lhs(), Some(binary.rhs()), |self_, lhs| {
                     const MAX_UINT32_LITERAL: LiteralKind = LiteralKind::Num(u32::MAX as f64);
                     if let Expression::Literal(literal) = binary.rhs().flatten()
                         && (
@@ -40,7 +42,7 @@ impl ByteCompiler<'_> {
                 });
             }
             BinaryOp::Relational(op) => {
-                self.compile_expr_operand(binary.lhs(), |self_, lhs| {
+                self.compile_expr_operand_guarded(binary.lhs(), Some(binary.rhs()), |self_, lhs| {
                     self_.compile_binary_relational(op, binary.rhs(), dst, lhs);
                 });
             }
