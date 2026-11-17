@@ -5,7 +5,7 @@
 //! [mdn]: https://developer.mozilla.org/en-US/docs/Web/API/Request
 use super::HttpRequest;
 use super::headers::JsHeaders;
-use boa_engine::object::builtins::JsPromise;
+use boa_engine::object::builtins::{JsPromise, JsUint8Array};
 use boa_engine::value::{Convert, TryFromJs};
 use boa_engine::{
     Context, Finalize, JsData, JsNativeError, JsObject, JsResult, JsString, JsValue, Trace,
@@ -129,6 +129,11 @@ pub struct JsRequest {
     #[unsafe_ignore_trace]
     inner: HttpRequest<Option<Vec<u8>>>,
     signal: Option<JsObject>,
+    /// Whether the body has been read by one of the `Body` mixin methods.
+    ///
+    /// See <https://fetch.spec.whatwg.org/#dom-body-bodyused>
+    #[unsafe_ignore_trace]
+    body_used: bool,
 }
 
 impl JsRequest {
@@ -159,6 +164,21 @@ impl JsRequest {
         self.inner.uri()
     }
 
+    /// Takes the body of the request, marking it as used (disturbed) if it was
+    /// present, and returning an error if it had already been read.
+    ///
+    /// This is the equivalent of the "read this Request's body" step of the
+    /// `Body` mixin methods.
+    ///
+    /// See <https://fetch.spec.whatwg.org/#body-mixin-read>
+    fn take_body(&mut self) -> JsResult<Vec<u8>> {
+        if self.body_used {
+            return Err(js_error!(TypeError: "Body has already been used"));
+        }
+        self.body_used = true;
+        Ok(self.inner.body_mut().take().unwrap_or_default())
+    }
+
     /// Create a [`JsRequest`] instance from JavaScript arguments, similar to
     /// calling its constructor in JavaScript.
     ///
@@ -187,11 +207,16 @@ impl JsRequest {
         if let Some(mut options) = options {
             let signal = options.take_signal().or(signal);
             let inner = options.into_request_builder(Some(request))?;
-            Ok(Self { inner, signal })
+            Ok(Self {
+                inner,
+                signal,
+                body_used: false,
+            })
         } else {
             Ok(Self {
                 inner: request,
                 signal,
+                body_used: false,
             })
         }
     }
@@ -202,6 +227,7 @@ impl From<HttpRequest<Option<Vec<u8>>>> for JsRequest {
         Self {
             inner,
             signal: None,
+            body_used: false,
         }
     }
 }
@@ -261,20 +287,28 @@ impl JsRequest {
         JsHeaders::from_http(self.inner.headers().clone())
     }
 
+    /// Returns whether the body has already been read.
+    ///
+    /// See <https://fetch.spec.whatwg.org/#dom-body-bodyused>
+    #[boa(getter)]
+    fn body_used(&self) -> bool {
+        self.body_used
+    }
+
     /// Reads the request body as a UTF-8 string.
     ///
     /// Returns a `Promise` that resolves to a string.
     ///
     /// See <https://fetch.spec.whatwg.org/#dom-body-text>
-    fn text(&self, context: &mut Context) -> JsPromise {
-        let body = self.inner.body().clone().unwrap_or_default();
-        JsPromise::from_async_fn(
+    fn text(&mut self, context: &mut Context) -> JsResult<JsPromise> {
+        let body = self.take_body()?;
+        Ok(JsPromise::from_async_fn(
             async move |_| {
                 let text = String::from_utf8_lossy(&body);
                 Ok(JsString::from(text.as_ref()).into())
             },
             context,
-        )
+        ))
     }
 
     /// Reads the request body and parses it as JSON.
@@ -282,9 +316,9 @@ impl JsRequest {
     /// Returns a `Promise` that resolves to the parsed JavaScript value.
     ///
     /// See <https://fetch.spec.whatwg.org/#dom-body-json>
-    fn json(&self, context: &mut Context) -> JsPromise {
-        let body = self.inner.body().clone().unwrap_or_default();
-        JsPromise::from_async_fn(
+    fn json(&mut self, context: &mut Context) -> JsResult<JsPromise> {
+        let body = self.take_body()?;
+        Ok(JsPromise::from_async_fn(
             async move |context| {
                 let json_str = String::from_utf8_lossy(&body);
                 let json = serde_json::from_str::<serde_json::Value>(&json_str)
@@ -292,7 +326,22 @@ impl JsRequest {
                 JsValue::from_json(&json, &mut context.borrow_mut())
             },
             context,
-        )
+        ))
+    }
+
+    /// Reads the request body as a `Uint8Array`.
+    ///
+    /// Returns a `Promise` that resolves to a `Uint8Array` with the body's bytes.
+    ///
+    /// See <https://fetch.spec.whatwg.org/#dom-body-bytes>
+    fn bytes(&mut self, context: &mut Context) -> JsResult<JsPromise> {
+        let body = self.take_body()?;
+        Ok(JsPromise::from_async_fn(
+            async move |context| {
+                JsUint8Array::from_iter(body, &mut context.borrow_mut()).map(Into::into)
+            },
+            context,
+        ))
     }
 
     /// Reads the request body and parses it as `application/x-www-form-urlencoded`.
@@ -304,8 +353,8 @@ impl JsRequest {
     /// supported. When the same key appears multiple times, the last value wins.
     ///
     /// See <https://fetch.spec.whatwg.org/#dom-body-formdata>
-    fn form_data(&self, context: &mut Context) -> JsPromise {
-        let body = self.inner.body().clone().unwrap_or_default();
+    fn form_data(&mut self, context: &mut Context) -> JsResult<JsPromise> {
+        let body = self.take_body()?;
         let content_type = self
             .inner
             .headers()
@@ -313,7 +362,7 @@ impl JsRequest {
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
 
-        JsPromise::from_async_fn(
+        Ok(JsPromise::from_async_fn(
             async move |context| {
                 // Reject multipart; accept url-encoded or no Content-Type.
                 let is_url_encoded = content_type
@@ -343,6 +392,6 @@ impl JsRequest {
                 Ok(form_obj.into())
             },
             context,
-        )
+        ))
     }
 }

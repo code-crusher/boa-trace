@@ -498,7 +498,23 @@ fn request_getters() {
                 assertEq(request.headers.get("content-type"), "application/json");
                 assertEq(request.headers.get("x-test"), "yes");
                 assertEq(await request.text(), '{"a":1,"b":[2,3]}');
-                const json = await request.json();
+
+                // The body can only be read once.
+                assertEq(request.bodyUsed, true);
+                try {
+                    await request.json();
+                    throw Error("expected the call above to throw");
+                } catch (e) {
+                    if (!(e instanceof TypeError)) {
+                        throw e;
+                    }
+                }
+
+                const jsonRequest = new Request("http://unit.test/api?x=1", {
+                    method: "POST",
+                    body: '{"a":1,"b":[2,3]}',
+                });
+                const json = await jsonRequest.json();
                 assertEq(json.a, 1);
                 assertEq(json.b[1], 3);
 
@@ -518,6 +534,117 @@ fn request_getters() {
                 .unwrap()
                 .await_blocking(ctx)
                 .expect("request getter assertions should pass");
+        }),
+    ]);
+}
+
+#[test]
+fn request_body_mixin_methods_exist() {
+    run_test_actions([
+        TestAction::harness(),
+        TestAction::inspect_context(|ctx| {
+            let fetcher = TestFetcher::default();
+            crate::fetch::register(fetcher, None, ctx).expect("failed to register fetch");
+        }),
+        TestAction::run(indoc! {r#"
+            const request = new Request("http://unit.test", { method: "POST", body: "x" });
+            assertEq(typeof request.text, "function");
+            assertEq(typeof request.json, "function");
+            assertEq(typeof request.bytes, "function");
+            assertEq(typeof request.formData, "function");
+            assertEq(typeof request.bodyUsed, "boolean");
+        "#}),
+        // Assertions made in JavaScript.
+    ]);
+}
+
+#[test]
+fn request_body_used_and_single_read() {
+    run_test_actions([
+        TestAction::harness(),
+        TestAction::inspect_context(|ctx| {
+            let fetcher = TestFetcher::default();
+            crate::fetch::register(fetcher, None, ctx).expect("failed to register fetch");
+        }),
+        TestAction::run(indoc! {r#"
+            globalThis.done = (async () => {
+                const request = new Request("http://unit.test", {
+                    method: "POST",
+                    body: "hello",
+                });
+                assertEq(request.bodyUsed, false);
+                const text = await request.text();
+                assertEq(text, "hello");
+                assertEq(request.bodyUsed, true);
+
+                // A body can only be read once; further reads reject with a TypeError.
+                for (const method of ["text", "json", "bytes", "formData"]) {
+                    try {
+                        await request[method]();
+                        throw Error(`expected request.${method}() to throw`);
+                    } catch (e) {
+                        if (!(e instanceof TypeError)) {
+                            throw e;
+                        }
+                    }
+                }
+            })();
+        "#}),
+        TestAction::inspect_context(|ctx| {
+            let done = ctx.global_object().get(js_str!("done"), ctx).unwrap();
+            done.as_promise()
+                .unwrap()
+                .await_blocking(ctx)
+                .expect("bodyUsed assertions should pass");
+        }),
+    ]);
+}
+
+#[test]
+fn request_body_json_bytes_and_get_no_body() {
+    run_test_actions([
+        TestAction::harness(),
+        TestAction::inspect_context(|ctx| {
+            let fetcher = TestFetcher::default();
+            crate::fetch::register(fetcher, None, ctx).expect("failed to register fetch");
+        }),
+        TestAction::run(indoc! {r#"
+            globalThis.done = (async () => {
+                // `bytes()` resolves to a Uint8Array with the body's bytes.
+                const bytesRequest = new Request("http://unit.test", {
+                    method: "POST",
+                    body: "hello",
+                });
+                const bytes = await bytesRequest.bytes();
+                assertEq(bytes instanceof Uint8Array, true);
+                assertEq(bytes.length, 5);
+                assertEq(bytes[0], 104); // 'h'
+
+                // Reading a request without a body resolves to empty results.
+                const get = new Request("http://unit.test");
+                assertEq(get.bodyUsed, false);
+                assertEq(await get.text(), "");
+                assertEq(get.bodyUsed, true);
+
+                // A clone has an independent, still-unread body.
+                const original = new Request("http://unit.test", {
+                    method: "POST",
+                    body: '{"a":1}',
+                });
+                const clone = original.clone();
+                assertEq(clone.bodyUsed, false);
+                const json = await clone.json();
+                assertEq(json.a, 1);
+                assertEq(clone.bodyUsed, true);
+                assertEq(original.bodyUsed, false);
+            })();
+        "#}),
+        TestAction::inspect_context(|ctx| {
+            let done = ctx.global_object().get(js_str!("done"), ctx).unwrap();
+            done.as_promise()
+                .unwrap()
+                .await_blocking(ctx)
+                .expect("body mixin assertions should pass");
         }),
     ]);
 }
