@@ -19,32 +19,44 @@ impl ByteCompiler<'_> {
             BinaryOp::Arithmetic(op) => {
                 // Snapshot the LHS into a temporary when the RHS writes to the
                 // same binding, so the LHS observes its value *before* the RHS runs.
-                self.compile_expr_operand_guarded(binary.lhs(), Some(binary.rhs()), |self_, lhs| {
-                    self_.compile_binary_arithmetic(op, binary.rhs(), dst, lhs);
-                });
+                self.compile_expr_operand_guarded(
+                    binary.lhs(),
+                    Some(binary.rhs()),
+                    |self_, lhs| {
+                        self_.compile_binary_arithmetic(op, binary.rhs(), dst, lhs);
+                    },
+                );
             }
             BinaryOp::Bitwise(op) => {
-                self.compile_expr_operand_guarded(binary.lhs(), Some(binary.rhs()), |self_, lhs| {
-                    const MAX_UINT32_LITERAL: LiteralKind = LiteralKind::Num(u32::MAX as f64);
-                    if let Expression::Literal(literal) = binary.rhs().flatten()
-                        && (
-                            // x | 0
-                            (op == BitwiseOp::Or && literal.kind() == &LiteralKind::Int(0))
+                self.compile_expr_operand_guarded(
+                    binary.lhs(),
+                    Some(binary.rhs()),
+                    |self_, lhs| {
+                        const MAX_UINT32_LITERAL: LiteralKind = LiteralKind::Num(u32::MAX as f64);
+                        if let Expression::Literal(literal) = binary.rhs().flatten()
+                            && (
+                                // x | 0
+                                (op == BitwiseOp::Or && literal.kind() == &LiteralKind::Int(0))
                             ||
                             // x & 0xFFFFFFFF
                             (op == BitwiseOp::And && literal.kind() == &MAX_UINT32_LITERAL)
-                        )
-                    {
-                        self_.bytecode.emit_to_int32(dst.variable(), lhs);
-                    } else {
-                        self_.compile_binary_bitwise(op, binary.rhs(), dst, lhs);
-                    }
-                });
+                            )
+                        {
+                            self_.bytecode.emit_to_int32(dst.variable(), lhs);
+                        } else {
+                            self_.compile_binary_bitwise(op, binary.rhs(), dst, lhs);
+                        }
+                    },
+                );
             }
             BinaryOp::Relational(op) => {
-                self.compile_expr_operand_guarded(binary.lhs(), Some(binary.rhs()), |self_, lhs| {
-                    self_.compile_binary_relational(op, binary.rhs(), dst, lhs);
-                });
+                self.compile_expr_operand_guarded(
+                    binary.lhs(),
+                    Some(binary.rhs()),
+                    |self_, lhs| {
+                        self_.compile_binary_relational(op, binary.rhs(), dst, lhs);
+                    },
+                );
             }
             BinaryOp::Logical(op) => {
                 self.compile_expr(binary.lhs(), dst);
