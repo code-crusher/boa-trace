@@ -777,6 +777,43 @@ fn hashbang_comment() {
 }
 
 #[test]
+#[cfg(feature = "annex-b")]
+fn html_close_comment_first_line() {
+    // An HTML close comment (`-->`) at the very start of a script is a comment.
+    // <https://tc39.es/ecma262/#sec-html-like-comments>
+    check_script_parser("--> comment\n", vec![], &mut Interner::default());
+}
+
+#[test]
+#[cfg(feature = "annex-b")]
+fn html_close_comment_first_line_whitespace() {
+    check_script_parser("  \t--> comment\n", vec![], &mut Interner::default());
+}
+
+#[test]
+#[cfg(feature = "annex-b")]
+fn html_close_comment_first_line_after_comment() {
+    check_script_parser(
+        "/* comment */ /* another */ --> comment\n",
+        vec![],
+        &mut Interner::default(),
+    );
+}
+
+#[test]
+#[cfg(feature = "annex-b")]
+fn html_close_comment_after_hashbang() {
+    check_script_parser("#!/x\n--> comment\n", vec![], &mut Interner::default());
+}
+
+#[test]
+fn html_close_comment_not_at_line_start() {
+    // An HTML close comment is only valid at the start of a line, so this is a
+    // syntax error even with the `annex-b` feature enabled.
+    check_invalid_script("var a = 1 --> comment");
+}
+
+#[test]
 fn deny_unicode_escape_in_false_expression() {
     check_invalid_script(r"let x = f\u{61}lse;");
 }

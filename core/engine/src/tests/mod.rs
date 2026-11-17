@@ -24,6 +24,21 @@ fn length_correct_value_on_string_literal() {
 }
 
 #[test]
+#[cfg(feature = "annex-b")]
+fn html_close_comment_on_first_line_is_a_comment() {
+    // The `-->` line is a comment (Annex B HTML close comment), so execution
+    // continues on the next line.
+    // <https://tc39.es/ecma262/#sec-html-like-comments>
+    run_test_actions([TestAction::assert_eq(
+        indoc! {r#"
+            --> comment
+            "not a comment"
+        "#},
+        JsValue::from(js_str!("not a comment")),
+    )]);
+}
+
+#[test]
 fn empty_let_decl_undefined() {
     run_test_actions([TestAction::assert_eq("let a; a", JsValue::undefined())]);
 }

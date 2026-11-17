@@ -30,6 +30,15 @@ pub(super) struct BufferedLexer<R> {
     read_index: usize,
     write_index: usize,
     last_linear_pos: LinearPosition,
+    /// `true` while the lexer is still at the start of the source, before any token has been
+    /// buffered.
+    ///
+    /// This is used to skip an [`HTMLCloseComment`][html] (`-->`) that appears on the very first
+    /// line of the source, which is only valid before any token (or preceding comment) has been
+    /// lexed.
+    ///
+    /// [html]: https://tc39.es/ecma262/#prod-annexB-HTMLCloseComment
+    at_start: bool,
 }
 
 impl<R> From<Lexer<R>> for BufferedLexer<R>
@@ -53,6 +62,7 @@ where
             read_index: 0,
             write_index: 0,
             last_linear_pos: LinearPosition::default(),
+            at_start: true,
         }
     }
 }
@@ -132,7 +142,15 @@ where
             "write index went out of bounds"
         );
 
+        // An HTML close comment (`-->`) is only valid at the very beginning of the source
+        // (optionally preceded by whitespace or comments) or right after a line terminator,
+        // so it can only be skipped in those two cases.
+        // <https://tc39.es/ecma262/#sec-html-like-comments>
         let previous_index = self.write_index.checked_sub(1).unwrap_or(PEEK_BUF_SIZE - 1);
+
+        // `true` if the lexer is still positioned before the first token of the source.
+        let at_start = self.at_start;
+        self.at_start = false;
 
         if let Some(ref token) = self.peeked[previous_index]
             && token.kind() == &TokenKind::LineTerminator
@@ -150,6 +168,19 @@ where
                     }
                 } else {
                     break None;
+                }
+            };
+
+            self.peeked[self.write_index] = next;
+        } else if at_start {
+            // At the start of the source, an HTML close comment is also allowed on the first
+            // line, preceded only by whitespace or comments.
+            let next = loop {
+                self.lexer.skip_html_close(interner)?;
+                let next = self.lexer.next_no_skip(interner)?;
+                match next {
+                    Some(ref token) if token.kind() == &TokenKind::Comment => {}
+                    next => break next,
                 }
             };
 

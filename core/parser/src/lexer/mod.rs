@@ -230,6 +230,9 @@ impl<R> Lexer<R> {
             self.set_goal(InputElement::RegExp);
             if next_ch == 0x23 && self.cursor.peek_char()? == Some(0x21) {
                 let _token = HashbangComment.lex(&mut self.cursor, start, interner);
+                // `HashbangComment` consumed the line terminator that ended the hashbang,
+                // so an HTML close comment on the next line must be skipped explicitly.
+                self.skip_html_close(interner)?;
                 return self.next(interner);
             }
         }
