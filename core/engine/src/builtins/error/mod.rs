@@ -145,6 +145,13 @@ pub struct Error {
 }
 
 impl Error {
+    /// Returns the [`ErrorKind`] tag of this error.
+    #[inline]
+    #[must_use]
+    pub const fn kind(&self) -> ErrorKind {
+        self.tag
+    }
+
     /// Create a new [`Error`].
     #[inline]
     #[must_use]

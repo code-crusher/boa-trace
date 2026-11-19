@@ -2,13 +2,15 @@
 
 use crate::store::{JsValueStore, StringStore, ValueStoreInner, unsupported_type};
 use boa_engine::builtins::array_buffer::{AlignedVec, ArrayBuffer};
-use boa_engine::builtins::error::Error;
+use boa_engine::builtins::error::{Error, ErrorKind};
 use boa_engine::object::builtins::{
     JsArray, JsArrayBuffer, JsDataView, JsDate, JsMap, JsRegExp, JsSet, JsSharedArrayBuffer,
     JsTypedArray,
 };
 use boa_engine::property::PropertyKey;
-use boa_engine::{Context, JsError, JsObject, JsResult, JsString, JsValue, JsVariant, js_error};
+use boa_engine::{
+    Context, JsError, JsObject, JsResult, JsString, JsValue, JsVariant, js_error, js_string,
+};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 /// A Map of seen objects when walking through the value. We use the address
@@ -181,6 +183,87 @@ fn clone_regexp(
     Ok(stored)
 }
 
+fn clone_error(
+    original: &JsObject,
+    transfer: &FxHashSet<JsObject>,
+    seen: &mut SeenMap,
+    context: &mut Context,
+) -> JsResult<JsValueStore> {
+    let mut store = JsValueStore::empty();
+    seen.insert(original, store.clone());
+
+    let kind = original
+        .downcast_ref::<Error>()
+        .map_or(ErrorKind::Error, |error| match error.kind() {
+            kind @ (ErrorKind::Aggregate
+            | ErrorKind::Eval
+            | ErrorKind::Type
+            | ErrorKind::Range
+            | ErrorKind::Reference
+            | ErrorKind::Syntax
+            | ErrorKind::Uri) => kind,
+            _ => ErrorKind::Error,
+        });
+
+    let message = original
+        .get(js_string!("message"), context)?
+        .to_string(context)?;
+
+    // The structured clone algorithm reads `name` and `stack` with `Get`, so
+    // both are converted to strings, or set to the empty string if undefined.
+    let to_optional_string = |key, context: &mut Context| -> JsResult<JsString> {
+        let value = original.get(key, context)?;
+        if value.is_undefined() {
+            Ok(js_string!())
+        } else {
+            value.to_string(context)
+        }
+    };
+
+    let name = to_optional_string(js_string!("name"), context)?;
+    let stack = to_optional_string(js_string!("stack"), context)?;
+
+    let cause = if original.has_own_property(js_string!("cause"), context)? {
+        let cause = original.get(js_string!("cause"), context)?;
+        Some(try_from_js_value(&cause, transfer, seen, context)?)
+    } else {
+        None
+    };
+
+    let errors = if kind == ErrorKind::Aggregate {
+        let errors = original.get(js_string!("errors"), context)?;
+        let Some(errors) = errors.as_object().filter(|o| o.is_array()) else {
+            return Err(unsupported_type());
+        };
+        let errors = JsArray::from_object(errors).map_err(|_| unsupported_type())?;
+
+        let length = errors.length(context)?;
+        let length = usize::try_from(length).map_err(JsError::from_rust)?;
+        let mut values = Vec::with_capacity(length);
+        for i in 0..length {
+            let value = errors.get(i, context)?;
+            values.push(try_from_js_value(&value, transfer, seen, context)?);
+        }
+        values
+    } else {
+        Vec::new()
+    };
+
+    // SAFETY: This is safe as this function is the sole owner of the store.
+    unsafe {
+        store.replace(ValueStoreInner::Error {
+            kind,
+            name: name.into(),
+            message: message.into(),
+            stack: stack.into(),
+            cause,
+            errors,
+        });
+    }
+
+    Ok(store)
+}
+
 fn try_from_map(
     original: &JsObject,
     map: &JsMap,
@@ -258,8 +341,8 @@ fn try_from_js_object_clone(
         return clone_typed_array(object, typed_array, transfer, seen, context);
     } else if let Ok(ref date) = JsDate::from_object(object.clone()) {
         return clone_date(object, date, seen, context);
-    } else if let Ok(_error) = object.clone().downcast::<Error>() {
-        return Err(js_error!(TypeError: "Errors are not supported yet."));
+    } else if object.downcast_ref::<Error>().is_some() {
+        return clone_error(object, transfer, seen, context);
     } else if let Ok(ref regexp) = JsRegExp::from_object(object.clone()) {
         return clone_regexp(object, regexp, seen, context);
     } else if let Ok(_dataview) = JsDataView::from_object(object.clone()) {

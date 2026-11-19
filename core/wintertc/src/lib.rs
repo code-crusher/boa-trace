@@ -148,6 +148,14 @@ pub(crate) mod test {
             })
         }
 
+        /// Runs `source`, panicking if it throws or doesn't evaluate to `true`.
+        #[allow(unused)]
+        pub(crate) fn assert(source: impl Into<Cow<'static, str>>) -> Self {
+            Self(Inner::Assert {
+                source: source.into(),
+            })
+        }
+
         /// Executes `op` with the currently active context.
         ///
         /// Useful to make custom assertions that must be done from Rust code.
