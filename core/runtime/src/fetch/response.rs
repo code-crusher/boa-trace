@@ -339,21 +339,28 @@ impl JsResponse {
     /// `Response.redirect(url, status)` per Fetch spec §7.4.
     #[boa(static)]
     fn redirect(url: JsValue, status: Option<u16>, context: &mut Context) -> JsResult<Self> {
+        // Step 1: Let parsedURL be the result of parsing url with current settings object's
+        // API base URL.
+        // Step 2: If parsedURL is failure, then throw a TypeError.
+        let url_str = url.to_string(context)?.to_std_string_escaped();
+        let parsed_url = url::Url::parse(&url_str)
+            .map_err(|_| js_error!(TypeError: "Invalid URL: {}", url_str))?;
+
+        // Step 3: If status is not a redirect status, then throw a RangeError.
         let status = status.unwrap_or(302);
         if !matches!(status, 301 | 302 | 303 | 307 | 308) {
             return Err(js_error!(RangeError: "Invalid redirect status: {}", status));
         }
-        let url_str = url.to_string(context)?.to_std_string_escaped();
-        http::Uri::try_from(url_str.as_str())
-            .map_err(|_| js_error!(TypeError: "Invalid URL: {}", url_str))?;
 
         let status_code = StatusCode::from_u16(status)
             .map_err(|_| js_error!(RangeError: "Invalid status code: {}", status))?;
 
+        // Step 7: Append (`Location`, parsedURL serialized and isomorphic encoded) to
+        // responseObject's response's header list.
         let mut headers = http::header::HeaderMap::new();
         headers.insert(
             HeaderName::from_static("location"),
-            HeaderValue::try_from(url_str)
+            HeaderValue::try_from(parsed_url.as_str())
                 .map_err(|_| js_error!(TypeError: "Invalid URL for header value"))?,
         );
 
