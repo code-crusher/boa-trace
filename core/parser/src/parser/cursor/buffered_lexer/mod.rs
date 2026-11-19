@@ -30,6 +30,13 @@ pub(super) struct BufferedLexer<R> {
     read_index: usize,
     write_index: usize,
     last_linear_pos: LinearPosition,
+    /// Determines if the lexer is still scanning the first input elements of the source text,
+    /// where an Annex B `HTMLCloseComment` (`-->`) is allowed to appear.
+    ///
+    /// This is set when the goal symbol is set to `InputElementHashbangOrRegExp`, which only
+    /// happens at the start of a Script, Module or eval source text, and is cleared once a
+    /// token that is not a comment has been lexed.
+    html_close_start: bool,
 }
 
 impl<R> From<Lexer<R>> for BufferedLexer<R>
@@ -53,6 +60,7 @@ where
             read_index: 0,
             write_index: 0,
             last_linear_pos: LinearPosition::default(),
+            html_close_start: false,
         }
     }
 }
@@ -78,6 +86,10 @@ where
 {
     /// Sets the goal symbol for the lexer.
     pub(super) fn set_goal(&mut self, elm: InputElement) {
+        // The `InputElementHashbangOrRegExp` goal symbol is only set at the start of a Script,
+        // Module or eval source text, which is also where an Annex B `HTMLCloseComment` (`-->`)
+        // is allowed to appear as the first input element.
+        self.html_close_start |= elm == InputElement::HashbangOrRegExp;
         self.lexer.set_goal(elm);
     }
 
@@ -134,8 +146,13 @@ where
 
         let previous_index = self.write_index.checked_sub(1).unwrap_or(PEEK_BUF_SIZE - 1);
 
-        if let Some(ref token) = self.peeked[previous_index]
-            && token.kind() == &TokenKind::LineTerminator
+        // An Annex B `HTMLCloseComment` (`-->`) can only be scanned either at the start of the
+        // source text or after a line terminator.
+        // <https://tc39.es/ecma262/#sec-html-like-comments>
+        if self.html_close_start
+            || self.peeked[previous_index]
+                .as_ref()
+                .is_some_and(|token| token.kind() == &TokenKind::LineTerminator)
         {
             // We don't want to have multiple contiguous line terminators in the buffer, since
             // they have no meaning.
@@ -152,6 +169,14 @@ where
                     break None;
                 }
             };
+
+            // The first token that is not a comment means the source text has definitively
+            // started, so an `HTMLCloseComment` cannot be scanned at the start anymore.
+            if self.html_close_start
+                && !matches!(&next, Some(token) if token.kind() == &TokenKind::Comment)
+            {
+                self.html_close_start = false;
+            }
 
             self.peeked[self.write_index] = next;
         } else {

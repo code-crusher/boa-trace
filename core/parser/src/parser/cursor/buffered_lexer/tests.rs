@@ -1,7 +1,8 @@
 use crate::{
-    lexer::{Token, TokenKind},
+    lexer::{InputElement, Token, TokenKind},
     parser::cursor::BufferedLexer,
 };
+use boa_ast::Punctuator;
 use boa_interner::Interner;
 use boa_macros::utf16;
 
@@ -286,4 +287,116 @@ fn issue_1768() {
     let interner = &mut Interner::default();
 
     assert!(cur.peek(3, true, interner).unwrap().is_none());
+}
+
+#[test]
+#[cfg(feature = "annex-b")]
+fn html_close_comment_at_start() {
+    let mut cur = BufferedLexer::from(&b"--> comment\ntrue"[..]);
+    let interner = &mut Interner::default();
+    cur.set_goal(InputElement::HashbangOrRegExp);
+
+    assert_eq!(
+        *cur.peek(0, true, interner)
+            .unwrap()
+            .expect("Some value expected")
+            .kind(),
+        TokenKind::boolean_literal(true),
+    );
+    assert_eq!(
+        *cur.next(true, interner)
+            .unwrap()
+            .expect("Some value expected")
+            .kind(),
+        TokenKind::boolean_literal(true),
+    );
+    // End of stream
+    assert!(cur.peek(0, true, interner).unwrap().is_none());
+}
+
+#[test]
+#[cfg(feature = "annex-b")]
+fn html_close_comment_at_start_with_whitespace() {
+    let mut cur = BufferedLexer::from(&b"   \t --> comment\ntrue"[..]);
+    let interner = &mut Interner::default();
+    cur.set_goal(InputElement::HashbangOrRegExp);
+
+    assert_eq!(
+        *cur.peek(0, true, interner)
+            .unwrap()
+            .expect("Some value expected")
+            .kind(),
+        TokenKind::boolean_literal(true),
+    );
+}
+
+#[test]
+#[cfg(feature = "annex-b")]
+fn html_close_comment_at_start_with_comments() {
+    let mut cur = BufferedLexer::from(&b"/* a */ /* b */--> comment\ntrue"[..]);
+    let interner = &mut Interner::default();
+    cur.set_goal(InputElement::HashbangOrRegExp);
+
+    assert_eq!(
+        *cur.peek(0, true, interner)
+            .unwrap()
+            .expect("Some value expected")
+            .kind(),
+        TokenKind::boolean_literal(true),
+    );
+}
+
+#[test]
+#[cfg(feature = "annex-b")]
+fn html_close_comment_not_at_start() {
+    // `-->` in the middle of a source text is not an HTML close comment; it must be lexed
+    // as the `--` and `>` punctuators instead.
+    let mut cur = BufferedLexer::from(&b"true --> comment"[..]);
+    let interner = &mut Interner::default();
+    cur.set_goal(InputElement::HashbangOrRegExp);
+
+    assert_eq!(
+        *cur.next(true, interner)
+            .unwrap()
+            .expect("Some value expected")
+            .kind(),
+        TokenKind::boolean_literal(true),
+    );
+    assert_eq!(
+        *cur.next(true, interner)
+            .unwrap()
+            .expect("Some value expected")
+            .kind(),
+        TokenKind::Punctuator(Punctuator::Dec),
+    );
+    assert_eq!(
+        *cur.next(true, interner)
+            .unwrap()
+            .expect("Some value expected")
+            .kind(),
+        TokenKind::Punctuator(Punctuator::GreaterThan),
+    );
+    assert_eq!(
+        *cur.next(true, interner)
+            .unwrap()
+            .expect("Some value expected")
+            .kind(),
+        TokenKind::identifier(interner.get_or_intern_static("comment", utf16!("comment"))),
+    );
+}
+
+#[test]
+#[cfg(not(feature = "annex-b"))]
+fn html_close_comment_at_start_without_annex_b() {
+    let mut cur = BufferedLexer::from(&b"--> comment\ntrue"[..]);
+    let interner = &mut Interner::default();
+    cur.set_goal(InputElement::HashbangOrRegExp);
+
+    assert_eq!(
+        *cur.next(true, interner)
+            .unwrap()
+            .expect("Some value expected")
+            .kind(),
+        TokenKind::Punctuator(Punctuator::Dec),
+    );
 }

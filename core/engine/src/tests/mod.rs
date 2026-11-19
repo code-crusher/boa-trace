@@ -489,6 +489,43 @@ fn issue5357() {
 }
 
 #[test]
+#[cfg(feature = "annex-b")]
+fn issue5375_html_close_comment_first_line() {
+    // An Annex B `HTMLCloseComment` (`-->`) is allowed as the first input element of a
+    // Script, so the first line must be treated as a comment.
+    // <https://tc39.es/ecma262/#sec-html-like-comments>
+    run_test_actions([
+        TestAction::assert_native_error(
+            indoc! {r#"
+                --> this is a comment
+                throw new EvalError("reached");
+            "#},
+            JsNativeErrorKind::Eval,
+            "reached",
+        ),
+        TestAction::assert_native_error(
+            indoc! {r#"
+                 --> this is a comment
+                throw new EvalError("reached");
+            "#},
+            JsNativeErrorKind::Eval,
+            "reached",
+        ),
+        TestAction::assert_native_error(
+            indoc! {r#"
+                /* a comment */ /*another comment*/--> this is a comment
+                throw new EvalError("reached");
+            "#},
+            JsNativeErrorKind::Eval,
+            "reached",
+        ),
+        // But not in the middle of a script, where `-->` lexes as the `--` and `>`
+        // punctuators (`(a--) > b`).
+        TestAction::assert_eq("var a = 5; a --> 3;", true),
+    ]);
+}
+
+#[test]
 fn empty_statement() {
     run_test_actions([TestAction::assert_eq(
         indoc! {r#"
