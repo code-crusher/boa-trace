@@ -35,6 +35,53 @@ fn to_exponential() {
             js_str!("NaN"),
         ),
         TestAction::assert_eq("Number('1.23e+2').toExponential()", js_str!("1.23e+2")),
+        // Non-finite values return `Number::toString(x)`, which uses the
+        // capitalized "Infinity"/"-Infinity"/"NaN" spellings.
+        TestAction::assert_eq("Infinity.toExponential()", js_str!("Infinity")),
+        TestAction::assert_eq("(-Infinity).toExponential()", js_str!("-Infinity")),
+        TestAction::assert_eq("NaN.toExponential()", js_str!("NaN")),
+        TestAction::assert_eq(
+            "new Number(Infinity).toExponential(1000)",
+            js_str!("Infinity"),
+        ),
+        TestAction::assert_eq(
+            "new Number(-Infinity).toExponential(1000)",
+            js_str!("-Infinity"),
+        ),
+        TestAction::assert_eq("NaN.toExponential(Infinity)", js_str!("NaN")),
+        // The non-finite check precedes the `fractionDigits` range check.
+        TestAction::assert_eq("Infinity.toExponential(200)", js_str!("Infinity")),
+        TestAction::assert_eq("Infinity.toExponential(-1)", js_str!("Infinity")),
+        // Ties round away from zero, so an exact tie picks the larger significand.
+        TestAction::assert_eq("(25).toExponential(0)", js_str!("3e+1")),
+        TestAction::assert_eq("(-25).toExponential(0)", js_str!("-3e+1")),
+        TestAction::assert_eq("(2.5).toExponential(0)", js_str!("3e+0")),
+        TestAction::assert_eq("(1.25).toExponential(1)", js_str!("1.3e+0")),
+        TestAction::assert_eq("(12345).toExponential(3)", js_str!("1.235e+4")),
+        // Rounding up can carry into the exponent.
+        TestAction::assert_eq("(9.99).toExponential(1)", js_str!("1.0e+1")),
+        TestAction::assert_eq("(0.9999).toExponential(0)", js_str!("1e+0")),
+        // Non-ties still round to nearest.
+        TestAction::assert_eq("(1.24).toExponential(1)", js_str!("1.2e+0")),
+        TestAction::assert_eq("(1.26).toExponential(1)", js_str!("1.3e+0")),
+        // Cases from test262's `return-values.js`.
+        TestAction::assert_eq(
+            "(123.456).toExponential(17)",
+            js_str!("1.23456000000000003e+2"),
+        ),
+        TestAction::assert_eq(
+            "(123.456).toExponential(20)",
+            js_str!("1.23456000000000003070e+2"),
+        ),
+        TestAction::assert_eq(
+            "(0.0001).toExponential(20)",
+            js_str!("1.00000000000000004792e-4"),
+        ),
+        TestAction::assert_eq("(0.9999).toExponential(3)", js_str!("9.999e-1")),
+        TestAction::assert_eq(
+            "(0.9999).toExponential(20)",
+            js_str!("9.99900000000000011013e-1"),
+        ),
     ]);
 }
 

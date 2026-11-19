@@ -949,15 +949,91 @@ fn f64_to_exponential(n: f64) -> JsString {
     }
 }
 
-/// Helper function that formats a float as a ES6-style exponential number string with a given precision.
-// We can't use the same approach as in `f64_to_exponential`
-// because in cases like (0.999).toExponential(0) the result will be 1e0.
-// Instead we get the index of 'e', and if the next character is not '-' we insert the plus sign
-fn f64_to_exponential_with_precision(n: f64, prec: usize) -> JsString {
-    let mut res = format!("{n:.prec$e}");
-    let idx = res.find('e').expect("'e' not found in exponential string");
-    if res.as_bytes()[idx + 1] != b'-' {
-        res.insert(idx + 1, '+');
+/// Returns the exact decimal digits of the positive finite `n`, without trailing zeros,
+/// together with the decimal exponent of the leading digit.
+///
+/// Writing `n` as `m * 2^k` with `m < 2^53`, the exact expansion has at most `53` digits
+/// from `m` plus `k * log10(5) < k * 0.7` digits from the negative power of two, so the
+/// precision is bounded tightly instead of always asking for the worst case.
+fn f64_exact_digits(n: f64) -> (Vec<u8>, i32) {
+    let bits = n.to_bits();
+    let biased_exponent = ((bits >> 52) & 0x7ff) as i32;
+    // Subnormals all share the exponent of the smallest normal, which bounds them too.
+    let k = if biased_exponent == 0 {
+        1074
+    } else {
+        biased_exponent - 1075
+    };
+    // `53 + ceil(|k| * 0.7)` digits suffice; round the slack up so the bound stays safe.
+    let precision = 55 + (k.unsigned_abs() as usize * 7).div_ceil(10);
+
+    let formatted = format!("{n:.precision$e}", precision = precision - 1);
+    let (mantissa, exponent) = formatted
+        .split_once('e')
+        .expect("exponential formatting always has an exponent");
+    let exponent = exponent
+        .parse()
+        .expect("exponential formatting always has a valid exponent");
+    let mut digits: Vec<u8> = mantissa.bytes().filter(u8::is_ascii_digit).collect();
+    while digits.len() > 1 && digits[digits.len() - 1] == b'0' {
+        digits.pop();
     }
+    (digits, exponent)
+}
+
+/// Rounds the exact `digits` of the positive finite `n` down to `keep` significant digits.
+///
+/// `Number.prototype.toExponential` breaks ties by picking the larger significand, so a
+/// discarded part of at least half a unit rounds up.
+fn round_significand(mut digits: Vec<u8>, exponent: i32, keep: usize) -> (Vec<u8>, i32) {
+    if digits.len() <= keep {
+        digits.resize(keep, b'0');
+        return (digits, exponent);
+    }
+    let round_up = digits[keep] >= b'5';
+    digits.truncate(keep);
+    if !round_up {
+        return (digits, exponent);
+    }
+    // Propagate the carry, growing the significand if every digit was a nine.
+    if let Some(idx) = digits.iter().rposition(|&d| d != b'9') {
+        digits[idx] += 1;
+        digits[idx + 1..].fill(b'0');
+        (digits, exponent)
+    } else {
+        digits.fill(b'0');
+        digits[0] = b'1';
+        (digits, exponent + 1)
+    }
+}
+
+/// Helper function that formats a float as a ES6-style exponential number string with a given precision.
+///
+/// `Number.prototype.toExponential` picks the significand closest to the number and breaks
+/// ties by picking the one with the larger magnitude, while Rust's `{:.*e}` breaks ties to
+/// even. The two only disagree on exact ties, so the rounding is done here from the exact
+/// decimal expansion of the value.
+fn f64_to_exponential_with_precision(n: f64, prec: usize) -> JsString {
+    // Handle the sign separately so that "larger" means "larger magnitude".
+    let (sign, n) = if n.is_sign_negative() {
+        ("-", -n)
+    } else {
+        ("", n)
+    };
+
+    let (exact, exact_exponent) = f64_exact_digits(n);
+    let (digits, exponent) = round_significand(exact, exact_exponent, prec + 1);
+
+    let digits = String::from_utf8(digits).expect("decimal digits are valid UTF-8");
+    let mut res = String::with_capacity(sign.len() + digits.len() + 4);
+    res.push_str(sign);
+    res.push_str(&digits[..1]);
+    if prec > 0 {
+        res.push('.');
+        res.push_str(&digits[1..]);
+    }
+    res.push('e');
+    res.push(if exponent < 0 { '-' } else { '+' });
+    res.push_str(&exponent.unsigned_abs().to_string());
     js_string!(res)
 }
