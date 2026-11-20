@@ -91,6 +91,11 @@ xsum = ["dep:xsum"]
 # Native Backtraces
 native-backtrace = []
 
+# Enables `JsNativeProxy`, which allows hosts to define the property internal methods of
+# their own objects (e.g. the indexed and named properties of DOM collections).
+# Disabled by default.
+native-proxy = []
+
 [dependencies]
 tag_ptr.workspace = true
 boa_interner.workspace = true

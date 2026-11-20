@@ -12,6 +12,8 @@ mod jsgenerator;
 mod jsgeneratorfunction;
 mod jsmap;
 mod jsmap_iterator;
+#[cfg(feature = "native-proxy")]
+mod jsnativeproxy;
 mod jspromise;
 mod jsproxy;
 mod jsregexp;
@@ -32,6 +34,8 @@ pub use jsgenerator::*;
 pub use jsgeneratorfunction::JsGeneratorFunction;
 pub use jsmap::*;
 pub use jsmap_iterator::*;
+#[cfg(feature = "native-proxy")]
+pub use jsnativeproxy::{JsNativeProxy, NativeProxyHooks};
 pub use jspromise::*;
 pub use jsproxy::{JsProxy, JsProxyBuilder, JsRevocableProxy};
 pub use jsregexp::JsRegExp;
