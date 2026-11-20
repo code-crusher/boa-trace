@@ -191,11 +191,14 @@ pub(super) fn try_value_into_js(
         return Ok(JsValue::from(v));
     }
 
-    // Match the value
-    match &*store.0 {
-        ValueStoreInner::Empty => {
-            unreachable!("ValueStoreInner::Empty should not exist after storage.");
-        }
+    // Match the value. The inner value is always filled by the time it is
+    // converted back into a `JsValue`.
+    let inner = store
+        .0
+        .get()
+        .expect("ValueStoreInner must be filled before it is converted.");
+
+    match inner {
         ValueStoreInner::Null => Ok(JsValue::null()),
         ValueStoreInner::Undefined => Ok(JsValue::undefined()),
         ValueStoreInner::Boolean(b) => Ok(JsValue::from(*b)),

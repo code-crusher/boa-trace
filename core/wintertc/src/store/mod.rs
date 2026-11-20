@@ -6,10 +6,13 @@ use boa_engine::builtins::typed_array::TypedArrayKind;
 use boa_engine::value::TryIntoJs;
 use boa_engine::{Context, JsError, JsResult, JsString, JsValue, JsVariant, js_error};
 use rustc_hash::FxHashSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 mod from;
 mod to;
+
+#[cfg(test)]
+mod tests;
 
 /// Convenience method to avoid copy-pasting the same message.
 #[inline]
@@ -48,13 +51,11 @@ impl From<StringStore> for JsString {
 }
 
 /// Inner value for [`JsValueStore`].
+///
+/// Note there is no "empty" variant: a store that is still under construction
+/// simply doesn't have an inner value yet (see [`JsValueStore::empty`]).
 #[derive(Debug)]
 enum ValueStoreInner {
-    /// An Empty value that will be filled later. This is only used during
-    /// construction, and if encountered at other points will result
-    /// in an error.
-    Empty,
-
     /// Primitive values - `null`.
     Null,
 
@@ -146,8 +147,13 @@ enum ValueStoreInner {
 /// all prototypes for the new types (e.g. Object).
 ///
 /// [sca]: https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Structured_clone_algorithm
+///
+/// The inner value is filled exactly once, after the value's (possibly
+/// recursive) contents have been built. This two-phase construction lets
+/// recursive values refer back to their own store while it is still being
+/// built, without any unsafe code.
 #[derive(Debug, Clone)]
-pub struct JsValueStore(Arc<ValueStoreInner>);
+pub struct JsValueStore(Arc<OnceLock<ValueStoreInner>>);
 
 impl TryIntoJs for JsValueStore {
     fn try_into_js(&self, context: &mut Context) -> JsResult<JsValue> {
@@ -157,38 +163,27 @@ impl TryIntoJs for JsValueStore {
 }
 
 impl JsValueStore {
-    /// Replace the inner content with a new inner. This is necessary as the inner
-    /// content holder must be allocated before its own inner content is created
-    /// (to allow for recursive data). Therefore, the pattern is to create the
-    /// store with an empty inner, then create the sub-content, and replace the
-    /// empty inner with the new inner.
+    /// Fill the inner content of a still-empty store. This is necessary as the
+    /// inner content holder must be allocated before its own inner content is
+    /// created (to allow for recursive data). Therefore, the pattern is to
+    /// create the store empty, then create the sub-content, and fill the store
+    /// with it.
     ///
-    /// # SAFETY
-    /// This should only be done if the inner content is [`ValueStoreInner::Empty`],
-    /// and only by the creator of the current [`JsValueStore`]. We enforce the first
-    /// rule at runtime (and will panic), and the second rule by requiring a mutable
-    /// reference. This is still unsafe and relies on unsafe pointer access.
-    unsafe fn replace(&mut self, other: ValueStoreInner) {
-        let ptr = Arc::as_ptr(&self.0).cast_mut();
-
-        assert!(!ptr.is_null());
-        unsafe {
-            assert!(
-                matches!(*ptr, ValueStoreInner::Empty),
-                "ValueStoreInner must be empty."
-            );
-
-            *ptr = other;
-        }
+    /// # Panics
+    /// Panics if the inner content was already filled.
+    fn fill(&self, inner: ValueStoreInner) {
+        self.0
+            .set(inner)
+            .expect("ValueStoreInner must only be filled once.");
     }
 
-    /// A still-being-constructed value.
+    /// A still-being-constructed value, with no inner content yet.
     fn empty() -> Self {
-        Self(Arc::new(ValueStoreInner::Empty))
+        Self(Arc::new(OnceLock::new()))
     }
 
     fn new(inner: ValueStoreInner) -> Self {
-        Self(Arc::new(inner))
+        Self(Arc::new(OnceLock::from(inner)))
     }
 
     /// Create a context-free [`JsValue`] equivalent from an existing `JsValue` and the
