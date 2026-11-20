@@ -15,8 +15,11 @@ use crate::{
     context::intrinsics::{Intrinsics, StandardConstructor, StandardConstructors},
     error::JsNativeError,
     js_string,
-    object::{CONSTRUCTOR, JsObject, internal_methods::get_prototype_from_constructor},
-    property::Attribute,
+    object::{
+        CONSTRUCTOR, JsObject,
+        internal_methods::{InternalMethodPropertyContext, get_prototype_from_constructor},
+    },
+    property::{Attribute, CompletePropertyDescriptor, PropertyKey},
     realm::Realm,
     string::{CodePoint, CommonJsStringBuilder, JsStrVariant, StaticJsStrings},
     symbol::JsSymbol,
@@ -26,6 +29,7 @@ use boa_gc::{Finalize, Trace};
 use boa_macros::{js_str, utf16};
 use boa_parser::lexer::regex::RegExpFlags;
 use regress::{Flags, Range, Regex};
+use std::rc::Rc;
 use std::str::FromStr;
 
 use super::{BuiltInBuilder, BuiltInConstructor, IntrinsicObject};
@@ -41,7 +45,10 @@ mod tests;
 #[boa_gc(unsafe_empty_trace)]
 pub struct RegExp {
     /// Regex matcher.
-    matcher: Regex,
+    ///
+    /// Shared so that `RegExpBuiltinExec` can clone the `RegExp` data without
+    /// deep-copying the compiled program (instructions, bracket tables, group names).
+    matcher: Rc<Regex>,
     flags: RegExpFlags,
     original_source: JsString,
     original_flags: JsString,
@@ -97,6 +104,18 @@ impl IntrinsicObject for RegExp {
         let get_source = BuiltInBuilder::callable(realm, Self::get_source)
             .name(js_string!("get source"))
             .build();
+
+        // `%RegExp.prototype.exec%` is created from the intrinsic object slot, so that the
+        // identity of the intrinsic function can be checked from other builtins.
+        let exec_function = BuiltInBuilder::callable_with_object(
+            realm,
+            realm.intrinsics().objects().regexp_prototype_exec().into(),
+            Self::exec,
+        )
+        .name(js_string!("exec"))
+        .length(1)
+        .build();
+
         let regexp = BuiltInBuilder::from_standard_constructor::<Self>(realm)
             .static_method(Self::escape, js_string!("escape"), 1)
             .static_accessor(
@@ -107,7 +126,11 @@ impl IntrinsicObject for RegExp {
             )
             .property(js_string!("lastIndex"), 0, Attribute::all())
             .method(Self::test, js_string!("test"), 1)
-            .method(Self::exec, js_string!("exec"), 1)
+            .property(
+                js_string!("exec"),
+                exec_function,
+                Attribute::WRITABLE | Attribute::NON_ENUMERABLE | Attribute::CONFIGURABLE,
+            )
             .method(Self::to_string, js_string!("toString"), 0)
             .method(Self::r#match, JsSymbol::r#match(), 1)
             .method(Self::match_all, JsSymbol::match_all(), 1)
@@ -394,7 +417,7 @@ impl RegExp {
         // 20. Set obj.[[RegExpRecord]] to rer.
         // 21. Set obj.[[RegExpMatcher]] to CompilePattern of parseResult with argument rer.
         Ok(RegExp {
-            matcher,
+            matcher: Rc::new(matcher),
             flags,
             original_source: p,
             original_flags: f,
@@ -1102,7 +1125,12 @@ impl RegExp {
         input: &JsString,
         context: &mut Context,
     ) -> JsResult<Option<JsObject>> {
-        let rx = this.borrow().data().clone();
+        // Clone only the cheap `Rc` matcher and the flags; the compiled program is shared.
+        let (matcher, original_flags) = {
+            let borrowed = this.borrow();
+            let data = borrowed.data();
+            (data.matcher.clone(), data.original_flags.clone())
+        };
         let this = this.upcast();
 
         // 1. Let length be the length of S.
@@ -1114,7 +1142,7 @@ impl RegExp {
             .to_length(context)?;
 
         // 3. Let flags be R.[[OriginalFlags]].
-        let flags = &rx.original_flags;
+        let flags = &original_flags;
 
         // 4. If flags contains "g", let global be true; else let global be false.
         let global = flags.contains(b'g');
@@ -1131,8 +1159,6 @@ impl RegExp {
         }
 
         // 8. Let matcher be R.[[RegExpMatcher]].
-        let matcher = &rx.matcher;
-
         // 9. If flags contains "u" or flags contains "v", let fullUnicode be true; else let fullUnicode be false.
         let full_unicode = flags.contains(b'u') || flags.contains(b'v');
 
@@ -1157,21 +1183,7 @@ impl RegExp {
 
         // 13.b. Let inputIndex be the index into input of the character that was obtained from element lastIndex of S.
         // 13.c. Let r be matcher(input, inputIndex).
-        let r: Option<regress::Match> = match (full_unicode, input.as_str().variant()) {
-            (true | false, JsStrVariant::Latin1(_)) => {
-                // TODO: Currently regress does not support latin1 encoding.
-                let input = input.to_vec();
-
-                // NOTE: We can use the faster ucs2 variant since there will never be two byte unicode.
-                matcher.find_from_ucs2(&input, last_index as usize).next()
-            }
-            (true, JsStrVariant::Utf16(input)) => {
-                matcher.find_from_utf16(input, last_index as usize).next()
-            }
-            (false, JsStrVariant::Utf16(input)) => {
-                matcher.find_from_ucs2(input, last_index as usize).next()
-            }
-        };
+        let r = Self::find_from(&matcher, input, last_index as usize, full_unicode);
 
         let Some(match_value) = r else {
             // d. If r is failure, then
@@ -1904,9 +1916,9 @@ impl RegExp {
         // 5. Let flags be ? ToString(? Get(rx, "flags")).
         let flags = rx.get(js_string!("flags"), context)?.to_string(context)?;
 
-        // 6. If flags contains "u", let unicodeMatching be true.
+        // 6. If flags contains "u" or flags contains "v", let unicodeMatching be true.
         // 7. Else, let unicodeMatching be false.
-        let unicode = flags.contains(b'u');
+        let unicode = flags.contains(b'u') || flags.contains(b'v');
 
         // 8. If flags contains "y", let newFlags be flags.
         // 9. Else, let newFlags be the string-concatenation of flags and "y".
@@ -1940,6 +1952,14 @@ impl RegExp {
         // 14. If lim is 0, return A.
         if lim == 0 {
             return Ok(a.into());
+        }
+
+        // Fast path: if `splitter` is a built-in `RegExp` whose `exec` is the intrinsic
+        // `%RegExp.prototype.exec%` data property, none of the `lastIndex`/`exec` calls in
+        // the spec loop below are observable. We can then search forward once per piece
+        // instead of calling sticky `exec` at every index, which is quadratic.
+        if Self::can_use_split_fast_path(&constructor, &splitter, unicode, context)? {
+            return Self::split_fast_path(&splitter, &arg_str, lim, unicode, context);
         }
 
         // 15. Let size be the length of S.
@@ -2045,6 +2065,237 @@ impl RegExp {
 
         // 21. Perform ! CreateDataPropertyOrThrow(A, ! ToString(𝔽(lengthA)), T).
         a.create_data_property_or_throw(length_a, arg_str_substring, context)?;
+
+        // 22. Return A.
+        Ok(a.into())
+    }
+
+    /// Returns `true` if the `@@split` spec loop cannot be observed by user code.
+    ///
+    /// The loop's only effects are `Set(splitter, "lastIndex", ...)` and `RegExpExec(splitter, S)`.
+    /// Both are unobservable if:
+    /// - `splitter` was created by the intrinsic `%RegExp%`, so no user code holds a reference
+    ///   to it and the `lastIndex` writes cannot be observed;
+    /// - `splitter` is sticky and advances indices exactly like `AdvanceStringIndex(S, q, ...)`;
+    /// - `lastIndex` is an own writable data property, shadowing any prototype accessor;
+    /// - `Get(splitter, "exec")` resolves, without running any getter, to the intrinsic
+    ///   `%RegExp.prototype.exec%` data property.
+    fn can_use_split_fast_path(
+        constructor: &JsObject,
+        splitter: &JsObject,
+        unicode: bool,
+        context: &mut Context,
+    ) -> JsResult<bool> {
+        // A user-defined constructor (e.g. a `RegExp` subclass) can keep a reference to the
+        // splitter, making the `lastIndex` writes of the loop observable.
+        if !JsObject::equals(
+            constructor,
+            &context.intrinsics().constructors().regexp().constructor(),
+        ) {
+            return Ok(false);
+        }
+
+        let Some(data) = splitter.downcast_ref::<RegExp>() else {
+            return Ok(false);
+        };
+
+        let flags = &data.original_flags;
+        let splitter_unicode = flags.contains(b'u') || flags.contains(b'v');
+        if !flags.contains(b'y') || splitter_unicode != unicode {
+            return Ok(false);
+        }
+        drop(data);
+
+        if !Self::last_index_is_writable_data(splitter, context)? {
+            return Ok(false);
+        }
+
+        Self::exec_is_builtin_intrinsic(splitter, context)
+    }
+
+    /// Returns `true` if `lastIndex` is an own writable data property of `splitter`.
+    ///
+    /// Only in that case are the loop's `lastIndex` writes unobservable and shadowing any
+    /// accessor that could exist further up the prototype chain.
+    fn last_index_is_writable_data(splitter: &JsObject, context: &mut Context) -> JsResult<bool> {
+        let desc = splitter.__get_own_property__(
+            &js_string!("lastIndex").into(),
+            &mut InternalMethodPropertyContext::new(context),
+        )?;
+        Ok(matches!(
+            desc,
+            Some(CompletePropertyDescriptor::Data {
+                writable: true,
+                ..
+            })
+        ))
+    }
+
+    /// Returns `true` if `Get(obj, "exec")` would find the intrinsic `%RegExp.prototype.exec%`.
+    ///
+    /// Walks the prototype chain using `[[GetOwnProperty]]` so that no getter is ever called.
+    fn exec_is_builtin_intrinsic(obj: &JsObject, context: &mut Context) -> JsResult<bool> {
+        let intrinsic = context.intrinsics().objects().regexp_prototype_exec();
+        let key = PropertyKey::from(js_string!("exec"));
+
+        let mut current = Some(obj.clone());
+        while let Some(object) = current {
+            let desc = object
+                .__get_own_property__(&key, &mut InternalMethodPropertyContext::new(context))?;
+            if let Some(desc) = desc {
+                return Ok(match desc {
+                    CompletePropertyDescriptor::Data { value, .. } => value
+                        .as_object()
+                        .is_some_and(|value| JsObject::equals(&value, &intrinsic)),
+                    CompletePropertyDescriptor::Accessor { .. } => false,
+                });
+            }
+            current = object.prototype();
+        }
+
+        Ok(false)
+    }
+
+    /// Searches `input` for the first match of `matcher` at or after `from`.
+    fn find_from(
+        matcher: &Regex,
+        input: &JsString,
+        from: usize,
+        full_unicode: bool,
+    ) -> Option<regress::Match> {
+        match (full_unicode, input.as_str().variant()) {
+            (_, JsStrVariant::Latin1(_)) => {
+                // TODO: Currently regress does not support latin1 encoding.
+                let input = input.to_vec();
+
+                // NOTE: We can use the faster ucs2 variant since there will never be two byte unicode.
+                matcher.find_from_ucs2(&input, from).next()
+            }
+            (true, JsStrVariant::Utf16(input)) => matcher.find_from_utf16(input, from).next(),
+            (false, JsStrVariant::Utf16(input)) => matcher.find_from_ucs2(input, from).next(),
+        }
+    }
+
+    /// Linear-time `@@split` for the case where the spec loop cannot observe user code.
+    ///
+    /// Instead of calling sticky `exec` at every index `q`, this searches forward once per
+    /// produced piece, which turns the quadratic loop into a linear scan.
+    fn split_fast_path(
+        splitter: &JsObject,
+        arg_str: &JsString,
+        lim: u32,
+        unicode: bool,
+        context: &mut Context,
+    ) -> JsResult<JsValue> {
+        let (matcher, full_unicode) = {
+            let data = splitter
+                .downcast_ref::<RegExp>()
+                .expect("checked by `can_use_split_fast_path`");
+            let full_unicode =
+                data.original_flags.contains(b'u') || data.original_flags.contains(b'v');
+            (data.matcher.clone(), full_unicode)
+        };
+
+        // 11. Let A be ! ArrayCreate(0).
+        let a = Array::array_create(0, None, context)?;
+
+        // 15. Let size be the length of S.
+        let size = arg_str.len() as u64;
+
+        // 16. If size is 0, then
+        if size == 0 {
+            // a. Let z be ? RegExpExec(splitter, S).
+            // b. If z is not null, return A.
+            if Self::find_from(&matcher, arg_str, 0, full_unicode).is_some() {
+                return Ok(a.into());
+            }
+
+            // c. Perform ! CreateDataPropertyOrThrow(A, "0", S).
+            a.create_data_property_or_throw(0, arg_str.clone(), context)?;
+
+            // d. Return A.
+            return Ok(a.into());
+        }
+
+        // 12. Let lengthA be 0.
+        let mut length_a = 0;
+        // 17. Let p be 0.
+        // 18. Let q be p.
+        let mut p = 0;
+        let mut q = 0;
+
+        // 19. Repeat, while q < size,
+        while q < size {
+            // b. Let z be ? RegExpExec(splitter, S).
+            let Some(match_value) = Self::find_from(&matcher, arg_str, q as usize, full_unicode)
+            else {
+                break;
+            };
+
+            // Sticky `exec` is only called while `q < size`, so a match starting at the end of
+            // the string (e.g. from `$`) is not a separator.
+            let start = match_value.start() as u64;
+            if start >= size {
+                break;
+            }
+
+            // i. Let e be ℝ(? ToLength(? Get(splitter, "lastIndex"))).
+            // ii. Set e to min(e, size).
+            let e = std::cmp::min(match_value.end() as u64, size);
+
+            // iii. If e = p, set q to AdvanceStringIndex(S, q, unicodeMatching).
+            if e == p {
+                q = advance_string_index(arg_str, start, unicode);
+                continue;
+            }
+
+            // 1. Let T be the substring of S from p to q.
+            let substring = arg_str.get_expect(p as usize..start as usize);
+
+            // 2. Perform ! CreateDataPropertyOrThrow(A, ! ToString(𝔽(lengthA)), T).
+            a.create_data_property_or_throw(length_a, substring, context)?;
+
+            // 3. Set lengthA to lengthA + 1.
+            length_a += 1;
+
+            // 4. If lengthA = lim, return A.
+            if length_a == lim {
+                return Ok(a.into());
+            }
+
+            // 5. Set p to e.
+            p = e;
+
+            // 6. Let numberOfCaptures be ? LengthOfArrayLike(z).
+            // 7. Set numberOfCaptures to max(numberOfCaptures - 1, 0).
+            // 8. Let i be 1.
+            // 9. Repeat, while i ≤ numberOfCaptures,
+            for capture in &match_value.captures {
+                // a. Let nextCapture be ? Get(z, ! ToString(𝔽(i))).
+                // b. Perform ! CreateDataPropertyOrThrow(A, ! ToString(𝔽(lengthA)), nextCapture).
+                let next_capture = capture.as_ref().map_or_else(JsValue::undefined, |range| {
+                    arg_str.get_expect(range.clone()).into()
+                });
+                a.create_data_property_or_throw(length_a, next_capture, context)?;
+
+                // d. Set lengthA to lengthA + 1.
+                length_a += 1;
+
+                // e. If lengthA = lim, return A.
+                if length_a == lim {
+                    return Ok(a.into());
+                }
+            }
+
+            // 10. Set q to p.
+            q = p;
+        }
+
+        // 20. Let T be the substring of S from p to size.
+        let substring = arg_str.get_expect(p as usize..size as usize);
+
+        // 21. Perform ! CreateDataPropertyOrThrow(A, ! ToString(𝔽(lengthA)), T).
+        a.create_data_property_or_throw(length_a, substring, context)?;
 
         // 22. Return A.
         Ok(a.into())
