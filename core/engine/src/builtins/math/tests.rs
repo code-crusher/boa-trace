@@ -167,6 +167,71 @@ fn fround() {
     ]);
 }
 
+#[cfg(feature = "float16")]
+#[test]
+fn f16round() {
+    run_test_actions([
+        TestAction::assert_eq("Math.f16round(NaN)", f64::NAN),
+        TestAction::assert_eq("Math.f16round(Infinity)", f64::INFINITY),
+        TestAction::assert_eq("Math.f16round(-Infinity)", f64::NEG_INFINITY),
+        TestAction::assert_eq("Math.f16round(0)", 0.0),
+        TestAction::assert_eq("Math.f16round(-0)", -0.0),
+        TestAction::assert_eq("Math.f16round(5)", 5.0),
+        TestAction::assert_eq("Math.f16round(5.5)", 5.5),
+        TestAction::assert_eq("Math.f16round(5.05)", 5.050_781_25),
+        TestAction::assert_eq("Math.f16round()", f64::NAN),
+        // Rounding must go directly from binary64 to binary16: routing the conversion
+        // through binary32 first double rounds and produces wrong results for values
+        // near a half-precision rounding boundary.
+        // See https://github.com/boa-dev/boa/issues/5237.
+        TestAction::assert_eq("Math.f16round(1.00048828125000022204)", 1.000_976_562_5),
+        TestAction::assert_eq("Math.f16round(1.0004882812499997779)", 1.0),
+        TestAction::assert_eq("Math.f16round(-1.00048828125000022204)", -1.000_976_562_5),
+        // Round to nearest, ties to even.
+        TestAction::assert_eq("Math.f16round(2049)", 2048.0),
+        TestAction::assert_eq("Math.f16round(2051)", 2052.0),
+        // Smallest half-precision value, and the largest value that still rounds to
+        // zero instead of to it.
+        TestAction::assert_eq(
+            "Math.f16round(5.960464477539063e-8)",
+            5.960_464_477_539_063e-8,
+        ),
+        TestAction::assert_eq("Math.f16round(2.9802322387695312e-8)", 0.0),
+        TestAction::assert_eq(
+            "Math.f16round(2.980232238769532e-8)",
+            5.960_464_477_539_063e-8,
+        ),
+        // Doubles in the subnormal range that round to a subnormal under ties to even.
+        TestAction::assert_eq(
+            "Math.f16round(8.940696716308594e-8)",
+            1.192_092_895_507_812_5e-7,
+        ),
+        TestAction::assert_eq(
+            "Math.f16round(1.4901161193847656e-7)",
+            1.192_092_895_507_812_5e-7,
+        ),
+        TestAction::assert_eq(
+            "Math.f16round(1.490116119384766e-7)",
+            1.788_139_343_261_718_8e-7,
+        ),
+        // Largest subnormal, smallest normal, and the boundary between them.
+        TestAction::assert_eq(
+            "Math.f16round(0.00006097555160522461)",
+            6.097_555_160_522_461e-5,
+        ),
+        TestAction::assert_eq("Math.f16round(0.00006103515625)", 6.103_515_625e-5),
+        TestAction::assert_eq(
+            "Math.f16round(0.0000610053539276123)",
+            6.097_555_160_522_461e-5,
+        ),
+        // Largest finite half-precision value, and the boundaries around the
+        // overflow to infinity.
+        TestAction::assert_eq("Math.f16round(65504)", 65_504.0),
+        TestAction::assert_eq("Math.f16round(65520)", f64::INFINITY),
+        TestAction::assert_eq("Math.f16round(65519.99999999999)", 65_504.0),
+    ]);
+}
+
 #[test]
 fn hypot() {
     run_test_actions([
